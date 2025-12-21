@@ -21,6 +21,16 @@ can input name or index to execute the script
 
 ---
 
+
+## 🚀 Quick Start
+
+Python ≥ 3.8  
+pyautogui  
+pytesseract  
+opencv-python 
+
+Run the main script
+
 ## 📁 Project Structure
 
 GameAgent/
@@ -33,6 +43,7 @@ GameAgent/
 │ └─ game2folder/
 │ ├─ commands.txt
 │ └─ login.png
+
 
 Each game folder contains:
 - `commands.txt` – automation script
@@ -48,9 +59,6 @@ Each game folder contains:
 | `?` | Shorten image wait time, skip to next step if not detected |
 | `|` | Enable parallel execution |
 | `*-*->*` | Conditional execution |
-
-use#can specific the index if pictures in screen have multiple
-use@can use OCR to double check the text in picture,contains 
 
 ---
 
@@ -82,6 +90,7 @@ use@can use OCR to double check the text in picture,contains
 |---|---|
 | `"text"` | Type alphanumeric text |
 | `@` | OCR captcha input |
+| `#` | specific the index if pictures in screen have multiple
 | `http://` | Open URL |
 | `.lnk` | Execute shortcut via cmd |
 
@@ -89,6 +98,8 @@ use@can use OCR to double check the text in picture,contains
 
 exsample:
 daily:{quest,wait1,subQuest,wait1,evolveQuest,wait1,evolve2@II,confirm,wait1,auto,wait1,skip#2,max,wait1,ok,toQuest}
+
+
 
 ## ⚠ Disclaimer
 
