@@ -1,4 +1,4 @@
-# GameAgent – Scriptable Image Automation Tool for Mobile Game Daily Tasks
+# GameAgent – Scriptable Image Automation Tool for Game Daily Tasks
  🎮
 
 GameAgent is a modular, image-based automation framework for mobile games and emulators.
