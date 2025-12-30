@@ -1,26 +1,59 @@
-# GameAgent – Scriptable Image Automation Tool for Game Daily Tasks
- 🎮
+GameAgent is an image-based automation system for PC games, emulators, and mobile games running on desktop environments.
+It allows you to automate daily sign-ins, reward collection, and repetitive tasks without modifying game files or memory.
 
-GameAgent is a modular, image-based automation framework for mobile games and emulators.
+The system is designed to be easy to use even with no programming background — simply prepare images and a command script, and GameAgent handles the rest.
 
-You can automate daily sign-in, rewards collection, and repetitive tasks **without modifying game files** — simply by using images and command scripts.
+Core Concept
 
----
+GameAgent uses image recognition instead of fixed screen coordinates.
+You create automation scripts by:
 
-## ✨ Features
+Creating a folder for each game
 
-- 🖼️ Image-based automation (no memory hacking)
-- 📜 Simple command script (`commands.txt`)
-- 🧩 Modular: one folder per game
-- 🔄 OCR support (captcha / text detection)
-- ⏸️ Pause & resume execution
-- 🧵 Parallel execution support
+Adding reference images (buttons, icons, UI elements)
 
-auto script basic on pyautogy and tesseract
+Writing simple command instructions in a script file
 
-can input name or index to execute the script
+This modular design greatly reduces duplicated work when creating or maintaining scripts.
 
----
+Key Advantages Over Traditional Game Scripts
+1️⃣ Image-based Clicking (No Strict Window Positioning)
+
+Clicks are performed based on matching images, not absolute coordinates
+
+You don’t need to lock the game window to an exact position
+
+As long as the window aspect ratio matches the screenshot, the script remains stable
+
+2️⃣ OCR Verification for Accurate Actions
+
+Optional OCR text recognition ensures the correct button is clicked
+
+Useful when the same UI element appears in different contexts
+(e.g., multiple stages using the same background)
+
+Example: only click an image if the detected text contains “Lv.7”
+
+3️⃣ Multi-Image Detection Logic
+
+Supports simultaneous detection of multiple images
+
+You can configure actions such as:
+
+“Click when any one of these images appears”
+
+Ideal for handling branching UI states, popups, or random events
+
+Features
+
+✨ Image-based automation (no memory hacking)
+📜 Simple script commands (commands.txt)
+🧩 Modular structure (one folder per game)
+🔄 OCR support (text & captcha detection)
+⏸️ Pause and resume execution
+🧵 Parallel execution support
+⚙️ Built with PyAutoGUI + Tesseract OCR
+🔍 Execute scripts by name or index
 
 
 ## 🚀 Quick Start
