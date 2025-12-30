@@ -58,25 +58,15 @@ Features
 
 ## 🚀 Quick Start
 
-Python ≥ 3.8  
-pyautogui  
-pytesseract  
-opencv-python 
-
-Run the main script
+Download gameAgent.exe and make sure to install Tesseract:
+https://github.com/UB-Mannheim/tesseract/wiki
 
 ## 📁 Project Structure
 
-GameAgent/
-├─ main.py
-├─ games/
-│ ├─ gamefolder/
-│ │ ├─ commands.txt
-│ │ ├─ home.png
-│ │ └─ battle.png
-│ └─ game2folder/
-│ ├─ commands.txt
-│ └─ login.png
+Create a folder in the same directory as gameAgent.exe, and you can name it after your game.
+Inside this folder, create a file named commands.txt and add the screenshots of the images you want to click.
+
+When you run gameAgent.exe, buttons with your game’s name will appear. Click the game button, and your command buttons will show up. Clicking a command button will execute that command.
 
 
 Each game folder contains:
