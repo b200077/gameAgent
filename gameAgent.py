@@ -1,13 +1,16 @@
 #---------------windows------------
 import os
-import win32pipe
 import win32file
+import win32gui
+import win32con
 #----------------------------------
 import sys
 import time
 import re
 import keyboard
+#----------------------------------
 import pytesseract
+#----------------------------------
 import difflib
 import pyautogui
 import pyscreeze
@@ -43,6 +46,9 @@ from PyQt5.QtGui import QPainter, QPen
 
 
 import mouse
+import uuid
+
+
 
 
 # 確保目前目錄就是腳本位置
@@ -58,6 +64,8 @@ ctk.set_appearance_mode("dark")
 STOP_EVENT = threading.Event()
 NEXT_EVENT = threading.Event()
 PAUSE_EVENT = threading.Event()
+
+WAIT_TOKEN = None  # 全域或放在 controller 裡
 
 def esc_pressed():
     STOP_EVENT.set()
@@ -80,11 +88,12 @@ def space_pressed():
 
 keyboard.add_hotkey('space', space_pressed, suppress=False)
 
-
-
 # 讀取 commands.txt
 def load_commands(file_path):
     commands = {}
+    if not os.path.exists(file_path):
+        print(f"警告: 檔案不存在 -> {file_path}")
+        return commands  # 檔案不存在就回傳空字典
     with open(file_path, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
@@ -145,7 +154,7 @@ def analysis_img_order(step):
         image_part = match.group(1)
         required_text = match.group(2)
 
-    match = re.match(r'(.+?)#(\d+)', image_part)
+    match = re.match(r'(.+?)#(\-?\d+)', image_part)
     if match:
         image_part = match.group(1)
         target_index = int(match.group(2))
@@ -194,6 +203,7 @@ def find_target_img(full_path, target_index, required_text,thread_event,on_done=
         #print(f"⚠ 找不到圖片 {full_path} ")
         if on_done : on_done(None)
         return
+    if target_index < 0 : target_index + len(locations)
     if target_index > len(locations):
         print(f"⚠ 找到 {len(locations)} 個，但沒有第 {target_index} 個")
         if on_done : on_done(None)
@@ -314,34 +324,37 @@ def wait_until_time(target_time):
     
 
 # 等待幾秒
-def wait_seconds(win, msg_label, seconds,on_done=None):
-    """
-    非阻塞等待指定秒數。
-    - win: customtkinter 主視窗
-    - seconds: 要等待的秒數
-    - on_done: (可選) 等待完成後要執行的回呼函式
-    """
-    remaining = seconds  # 每次都建立新的獨立變數
+def wait_seconds(win, msg_label, seconds, on_done=None):
+
+    global WAIT_TOKEN
+    token = uuid.uuid4()
+    WAIT_TOKEN = token
+
+    start = time.time()
     def check():
-        nonlocal remaining  # 宣告使用外層變數
+        # ❌ 不是目前這一輪，直接中止（避免重複）
+        if WAIT_TOKEN != token:
+            return
+        
+        elapsed = time.time() - start
+
         if NEXT_EVENT.is_set():
             msg_label.configure(text="⏹ 等待已中止")
-            if on_done : on_done("Next")
+            if on_done:
+                on_done("Next")
             print("⏹ NEXT_EVENT 被觸發，中止等待")
             return
+        msg_label.configure(text=f"⏱ 還剩 {max(0, seconds - elapsed):.1f} 秒...")
 
-        if remaining <= 0:
-            msg_label.configure(text=f"✅ 已等待 {remaining:.1f} 秒")
+        if elapsed >= seconds:
+            msg_label.configure(text=f"✅ 已等待 {seconds:.1f} 秒")
+            if on_done:
+                on_done("Next")
             print(f"✅ 已等待 {seconds:.1f} 秒")
-            if on_done : on_done("Next")
-            return
+        else:
+            win.after(100, check)
 
-        # 更新 label
-        msg_label.configure(text=f"⏱ 還剩 {remaining:.1f} 秒...")
-        remaining = round(max(0, remaining - 0.1), 1)  # 每次減 0.1 秒
-        win.after(100, check)
-
-    win.after(0, check)
+    check()
 
 def wait_button(win, button,on_done=None):
     """
@@ -367,13 +380,22 @@ def execute_one_step(step,folder_path,win, msg_label,on_done=None):
     print(step)
     def image_click(center,backup_plan,no_click=False):
         if center != False and not no_click :
+            try:
+                ctypes.windll.user32.BlockInput(True)
+                # move + click
+                pyautogui.moveTo(center)
+                pyautogui.click()
+            finally:
+                ctypes.windll.user32.BlockInput(False)
             #避免過快點擊出現的按鈕
-            pyautogui.moveTo(center)
-            pyautogui.click()
         if on_done : on_done(backup_plan)
     # 判斷是否定時執行
     # 假設 step 是像 "wait_14:30" 或 "wait_02:05" 這樣的字串
     # 在 excuse_one_step 裡替換
+    if step == 'exitCommand' :  return
+    if step == 'nextCommand' :  
+        if on_done: on_done()
+        return
     #---------------搶票用--------------
     if re.match(r'wait_?\d{1,2}:\d{2}', step):
         target_time_str = re.findall(r'wait_?(\d{1,2}:\d{2})', step)[0]
@@ -446,8 +468,7 @@ def execute_one_step(step,folder_path,win, msg_label,on_done=None):
         return
     # 判斷其他條件    
     if re.match(r'(.+)-(.+)->(.+)', step):            
-        check_condition(step,folder_path,win, msg_label)
-        if on_done:on_done()
+        check_condition(step,folder_path,win, msg_label,on_done)
         return
     if step =='inputByClipboard' :
         text = pyperclip.paste()
@@ -468,9 +489,15 @@ def execute_one_step(step,folder_path,win, msg_label,on_done=None):
         app = QApplication.instance()
         if app is None:
             app = QApplication(sys.argv)
-        window = ScreenShotWidget()
+        window = ScreenShotWidget(folder_path)
         window.show()
         app.exec_()
+        return
+    if re.match(r'minimize->(.+)', step):
+        processName = re.match(r'minimize->(.+)', step).group(1)
+        print(f"最小化{processName}視窗")
+        minimize_my_game_window(processName)
+        if on_done:on_done()
         return
     # 判斷or條件 
     if "|" in step:
@@ -493,13 +520,13 @@ def pause_script(win,on_done):
     wait_button(win,"space",on_done)
     
             
-def check_condition(step,folder_path,win, msg_label):
+def check_condition(step,folder_path,win, msg_label,on_done=None):
     def condition_noimage(center):
         if center is None : 
             update_message(win, msg_label,f"沒有找到圖片{image_part}.png,不執行指令{order}")
             return False
         NEXT_EVENT.clear()
-        execute_one_step(order,folder_path,win, msg_label)
+        execute_one_step(order,folder_path,win, msg_label,on_done)
     
     condition = None
     order = None
@@ -517,14 +544,16 @@ def check_condition(step,folder_path,win, msg_label):
             index = WEEK_MAP_ORDER.index(conditionValue)
             if conditionValue != day : 
                 update_message(win, msg_label,f"今天不是{WEEK_MAP[index]},不執行指令{order}")
-                return False
-            execute_one_step(order,folder_path,win, msg_label)
+                if on_done : on_done("Next")
+                return
+            execute_one_step(order,folder_path,win, msg_label,on_done)
         else:
             update_message(win, msg_label,"星期縮寫有誤，請輸入Mon,Tue,Wed,Thu,Fri,Sat,Sun")
     elif condition == "img"  :
         _, image_part, target_index, required_text = analysis_img_order(conditionValue)
         full_path = os.path.join(folder_path, f"{image_part}.png")
-        find_target_img(full_path, target_index, required_text,win,condition_noimage)            
+        thread_event = threading.Event()
+        find_target_img(full_path, target_index, required_text,thread_event,condition_noimage)            
     else:
         return False
 
@@ -614,16 +643,16 @@ def wait_until_image(win,step, folder_path,thread_event,on_done=None):
     timeout=15
     no_click=False
     no_move=False
-    backup_plan, image_part, target_index, required_text = analysis_img_order(step)
     match = re.match(r'waitImg->(.+)', step)
     if match:
         timeout=0
         no_click=True
         step = match.group(1)
 
+    backup_plan, image_part, target_index, required_text = analysis_img_order(step)
     wait_forever = (timeout == 0)
-    if backup_plan == "ignore": timeout = 0.4
-    if backup_plan == "Previous": timeout = 0.1
+    if backup_plan == "ignore": timeout = 1.2
+    if backup_plan == "Previous": timeout = 0.4
 
     full_path = os.path.join(folder_path, f"{image_part}.png")
     # ✅ 檢查檔案是否存在
@@ -631,11 +660,15 @@ def wait_until_image(win,step, folder_path,thread_event,on_done=None):
         print(f"❌ 找不到檔案: {full_path}")
         if on_done :on_done(False,"Pause")
         return 
-
-    print(f"🔍 等待圖片：{image_part}.png (目標第 {target_index} 個)")
+    if target_index > 0 :
+        print(f"🔍 等待圖片：{image_part}.png (目標第 {target_index} 個)")
+    else:
+        print(f"🔍 等待圖片：{image_part}.png (目標倒數第 {target_index * -1} 個)")
+    
     start = time.time()
     def find_image(center):
-                if NEXT_EVENT.is_set() and not thread_event.is_set():
+                if NEXT_EVENT.is_set() and not thread_event.is_set() :
+                    thread_event.set()
                     if on_done : on_done(False,backup_plan)
                     return
                 if center is not None:
@@ -645,10 +678,10 @@ def wait_until_image(win,step, folder_path,thread_event,on_done=None):
                         on_done(center,"Next",no_click)
                     return
                 # 超時判斷
-                if time.time() - start >= timeout and not wait_forever:
+                if time.time() - start >= timeout and not wait_forever and not thread_event.is_set():
                     print(f"⏳ 等待 {image_part}.png 超時 {timeout} 秒")
                     if backup_plan == "Next": PAUSE_EVENT.set()
-                    if  on_done and not thread_event.is_set() : on_done(False,backup_plan)    
+                    if  on_done : on_done(False,backup_plan)    
                     return 
                 win.after(
                                 100,
@@ -680,6 +713,7 @@ def command_menu(game_folder,app):
     commands = load_commands(os.path.join(folder_path, "commands.txt"))
     commands["setNameToClip"] = ["setNameToClip"]
     commands["editCommands"] = ["editCommands"]
+    commands["ocrSavePicture"] = ["ocrSavePicture"]
     
 
     if not commands:
@@ -695,9 +729,11 @@ def command_menu(game_folder,app):
     btn_width = 150
     btn_height = 40
 
-    for idx, (key, _) in enumerate(commands.items()):
-        if key.startswith("_") :
-            continue
+    # ✅ 過濾掉 _ 開頭（隱藏用 command）
+    items = [(k, v) for k, v in commands.items()
+            if not k.startswith("_")]
+
+    for idx, (key, _) in enumerate(items):
         row, col = divmod(idx, 2)  # 兩列排列
         btn = ctk.CTkButton(
             frame,
@@ -769,59 +805,12 @@ def launch_webdriver(url,win, msg_label):
 def launch_app(url):
     subprocess.run(["start", url], shell=True)
 
-
-def start_pipe_server():
-    # 定義命名管道名稱
-    pipe_name = r'\\.\pipe\script_recieve_server'
-    while True:
-        try:
-            # 创建命名管道
-            pipe_server = win32pipe.CreateNamedPipe(
-                pipe_name,
-                win32pipe.PIPE_ACCESS_DUPLEX,  # 访问模式
-                win32pipe.PIPE_TYPE_MESSAGE | win32pipe.PIPE_READMODE_MESSAGE | win32pipe.PIPE_WAIT,  # 管道模式
-                win32pipe.PIPE_UNLIMITED_INSTANCES,  # 最大实例数
-                1024,  # 输出缓冲区大小
-                1024,  # 输入缓冲区大小
-                0,  # 默认超时
-                None  # 安全属性
-            )
-
-            print("等待客戶端連接...")
-            win32pipe.ConnectNamedPipe(pipe_server, None)  # 等待客户端连接
-            print("客戶端已連接.")
-
-            # 读取客户端发送的消息
-            hr, message = win32file.ReadFile(pipe_server, 64 * 1024)
-            if hr == 0:
-                decoded_message = message.decode().strip()  # 解码并去掉多余的空格 
-                print(f"decoded_message: {decoded_message}") 
-                # if decoded_message == "refreshOpenSample":
-                #     messages = []
-                #     pipes = list_named_pipes("easyPreview")
-                #     for pipe in pipes:
-                #         app.logger.info(f"pipe: {pipe}")                         
-                #         messages.append(pipe)
-                # if decoded_message not in messages:
-                #     messages.append(decoded_message)
-                # order = decoded_message.split(' ')
-                # app.logger.info(f"order: {order}") 
-                # if order[1] not in messages and order[0] == "add":
-                #     messages.append(order[1])
-                # if order[1] in messages and order[0] == "remove":
-                #     messages.remove(order[1])
-                # app.logger.info(f"可用實例: {messages}") 
-                #with lock:  # 使用锁来保护对 messages 的访问
-                    
-            win32file.CloseHandle(pipe_server)  # 确保关闭管道
-        except Exception as ex:
-            print(f"錯誤: {ex}")
-
 class ScreenShotWidget(QWidget):
-    def __init__(self):
+    def __init__(self,folder):
         super().__init__()
         self.begin = None
-        self.end = None
+        self.end = None      
+        self.folder = folder  # ← 存起來  
 
         self.setWindowTitle("框選截圖 - 拖曳滑鼠框選要OCR的範圍")
         self.setWindowState(Qt.WindowFullScreen)
@@ -862,16 +851,27 @@ class ScreenShotWidget(QWidget):
 
         img = ImageGrab.grab(bbox=(x1, y1, x2, y2))
         #name = datetime.now().strftime("%Y-%m-%d %H:%M:%S") 
-        text = pytesseract.image_to_string(img, lang='jpn+chi_tra+eng')
+        text = pytesseract.image_to_string(img, lang='jpn+chi_tra+eng').strip()
 
         print("\n=== OCR 內容 ===")
         print(text)
         pyperclip.copy(text)
         safe_text = self.sanitize_filename(text)
-        img.save(os.path.join(BASE_PATH,"截圖辨識", f"{safe_text}.png"))
+        img.save(os.path.join(self.folder, f"{safe_text}.png"))
            
         print(f"截圖已保存：{safe_text}.png")
+
+def minimize_my_game_window(processName):
+    def enum_handler(hwnd, _):
+        if not win32gui.IsWindowVisible(hwnd):
+            return
+
+        title = win32gui.GetWindowText(hwnd)
+        if processName in title:
+            win32gui.ShowWindow(hwnd, win32con.SW_MINIMIZE)
+            print(f"已最小化視窗: {title}")
+
+    win32gui.EnumWindows(enum_handler, None)
     
 if __name__ == "__main__":
-    threading.Thread(target=start_pipe_server, daemon=True).start()
     main_menu()
