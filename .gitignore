@@ -8,6 +8,14 @@ AIprompt.txt
 .tmp.driveupload/
 .agents/
 
+# Local build helpers and superseded project files
+agent_core_0711.py
+agent_ui_0711.py
+build_agent_core.bat
+build_agent_ui.bat
+gameIconWeb.txt
+編譯流程.txt
+
 # This workspace also holds personal game scripts.  Publish only the
 # root-level application source, build scripts, and documentation.
 /*/
