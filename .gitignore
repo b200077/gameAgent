@@ -1,0 +1,13 @@
+# Compiled Windows applications
+*.exe
+
+# Local/private configuration and schedule data
+config.json
+schedule.json
+AIprompt.txt
+.tmp.driveupload/
+.agents/
+
+# This workspace also holds personal game scripts.  Publish only the
+# root-level application source, build scripts, and documentation.
+/*/

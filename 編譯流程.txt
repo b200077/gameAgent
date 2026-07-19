@@ -1,0 +1,13 @@
+編譯agent_core.py
+1.將F:\應用程式\遊戲腳本的agent_core.py覆蓋至F:\build
+2.在F:\build用cmd啟動環境build_env\Scripts\activate
+3.執行pyinstaller --onefile --noconsole --icon=core.ico agent_core.py
+4.等待編譯完成和並通知我關閉agent_core.exe
+5.生成的檔案在F:\build\dist\agent_core.exe，將其覆蓋回F:\應用程式\agent_core.exe
+
+編譯agent_ui.py
+1.將F:\應用程式\遊戲腳本的agent_ui.py覆蓋至F:\build
+2.在F:\build用cmd啟動環境build_env\Scripts\activate
+3.執行pyinstaller --onefile --icon=mouse32x32.ico agent_ui.py
+4.等待編譯完成和並通知我關閉agent_ui.exe
+5.生成的檔案在F:\build\dist\agent_ui.exe，將其覆蓋回F:\應用程式\agent_ui.exe

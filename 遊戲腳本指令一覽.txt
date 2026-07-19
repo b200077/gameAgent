@@ -1,0 +1,32 @@
+遊戲腳本指令一覽:
+| 可以使用並行執行緒
+↑ 圖片等待時間縮短，沒有偵測到圖片執行上一步
+? 圖片等待時間縮短，沒有偵測到圖片執行下一步
+@ 使用ocr判斷圖片有無含文字
+#指定找到的第n個圖片
+:使用模組
+
+綜合應用 skip3?,ok↑ 指持續按skip3直到ok出現
+
+waitImg-> 等待圖片出現
+waitPress-> 等待鍵盤按鍵
+waitMouse-> 等待滑鼠按鍵
+"指令" 輸入""內英數字
+press-> 按下鍵盤
+mouseClick 按下左鍵
+mouseMove(x_y) 移動滑鼠相對座標
+@-> 輸入驗證碼
+wait1 等待1秒，可輸入小數
+scrollUp, scrollDown 使用滑鼠滾輪
+輸入網頁http://可直接開啟網頁
+輸入.lnk檔使用cmd執行
+*-*->* 條件執行
+例如week-Mon->weekstar是當今天禮拜一點擊weekstar
+
+第一字元使用_的資料夾或指令不會顯示，但可使用
+
+img-selectStage->exitCommand if中斷指令
+callcommand中斷目前指令，執行指定指令
+
+focus->切換視窗
+close->關閉程序
