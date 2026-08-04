@@ -30,3 +30,5 @@ callcommand中斷目前指令，執行指定指令
 
 focus->切換視窗
 close->關閉程序
+
+match->圖片比對率

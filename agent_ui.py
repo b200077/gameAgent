@@ -13,6 +13,8 @@ import ctypes
 from datetime import datetime, timedelta
 from io import BytesIO
 from tkinter import messagebox
+from urllib.parse import quote
+
 # ── 第三方：圖形介面 ─────────────────────────────────────
 import customtkinter as ctk
 from customtkinter import CTkImage
@@ -423,6 +425,11 @@ class FilenameDialog(QDialog):
         search_btn = QPushButton("Google搜尋")
         search_btn.clicked.connect(self.search_image)
 
+        # 假設 self.name_input 是放置 OCR 文字的 QLineEdit / QTextEdit
+        # 新增「Google搜尋(文字)」按鈕
+        btn_search_text = QPushButton("Google搜尋(文字)", self)
+        btn_search_text.clicked.connect(self.on_google_search_text)
+
         # 🔹 檔名輸入
         self.line_edit = QLineEdit(default_name)
 
@@ -443,6 +450,7 @@ class FilenameDialog(QDialog):
         layout = QVBoxLayout()
         layout.addWidget(self.image_label)
         layout.addWidget(search_btn)
+        layout.addWidget(btn_search_text)
         layout.addLayout(name_layout)
         layout.addLayout(btn_layout)
 
@@ -470,6 +478,18 @@ class FilenameDialog(QDialog):
 
         except Exception as e:
             print("搜尋圖片失敗:", e)
+    def on_google_search_text(self):
+    # 取得目前文字框內的 OCR 文字
+        ocr_text = self.line_edit.text()
+        """將 OCR 辨識出來的文字丟給 Google 搜尋"""
+        if not ocr_text or not ocr_text.strip():
+            return
+        # 進行 URL 編碼處理（避免中文或特殊符號斷字）
+        encoded_text = quote(ocr_text.strip())
+        url = f"https://www.google.com/search?q={encoded_text}"
+        webbrowser.open(url)
+    
+    
     
 
 

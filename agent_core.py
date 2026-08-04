@@ -1,44 +1,36 @@
-#---------------windows------------
+# ── 標準函式庫 ────────────────────────────────────────
 import os
-import win32gui
-import win32con
-#----------------------------------
 import sys
 import time
 import re
-import keyboard
-#----------------------------------
-import pytesseract
-#----------------------------------
-import pyautogui
-from datetime import datetime, timedelta
-import cv2
-import numpy as np
-import threading
-import pyperclip
-import webbrowser
-
-import ctypes
-
 import subprocess
-
-#----------------------------------
-
-
-import mouse
+import threading
+import json
 import uuid
-
+import webbrowser
+from datetime import datetime, timedelta
 from dataclasses import dataclass
 
-import json
+# ── 第三方：自動化控制 ────────────────────────────────────
+import pyautogui
+import keyboard
+import mouse
+import pyperclip
+
+# ── 第三方：圖像與 OCR ────────────────────────────────────
+import cv2
+import numpy as np
+import pytesseract
+
+# ── 第三方：系統與網路 ────────────────────────────────────
+import win32gui
+import win32con
 import socket
-
 import psutil
-
+import obsws_python as obs
 
 # 確保目前目錄就是腳本位置
 os.chdir(os.path.dirname(os.path.abspath(sys.argv[0])))
-
 
 BASE_PATH = '.'
 WEEK_MAP= ["星期一","星期二","星期三","星期四","星期五","星期六","星期日"]
@@ -71,6 +63,22 @@ def load_config(path):
     return config
 
 CONFIG = load_config(CONFIG_PATH)
+
+def get_obs_client():
+    global cl
+    try:
+        cl = obs.ReqClient(
+            host=CONFIG['obs_host'],
+            port=CONFIG['obs_port'],
+            password=CONFIG['obs_password'],
+            timeout=3
+        )
+    except ConnectionRefusedError:
+        print("OBS 未開啟或 WebSocket 伺服器未啟用")
+        return None
+    return cl
+
+cl = get_obs_client()
 
 STOP_EVENT = threading.Event()
 NEXT_EVENT = threading.Event()
@@ -545,6 +553,7 @@ def execute_one_step(step,folder_path,on_done=None):
     if step.lower().startswith('callcommand:'):  
         if on_done: on_done(step)
         return
+    
     #---------------搶票用--------------
     if re.match(r'wait\d{1,2}:\d{2}', step):
         target_time_str = re.findall(r'wait_?(\d{1,2}:\d{2})', step)[0]
@@ -647,6 +656,14 @@ def execute_one_step(step,folder_path,on_done=None):
     if re.match(r'match->(.+)', step):
         image_name = re.match(r'match->(.+)', step).group(1)
         calibrate_match(image_name, folder_path, on_done)
+        return
+    if "obsStart" in step:
+        cl.start_record()
+        if on_done: on_done()
+        return
+    if "obsStop" in step:
+        cl.stop_record()
+        if on_done: on_done()
         return
     # 判斷or條件 
     backup_plan,timeout = backup_plan_and_timeOut(step)
@@ -889,7 +906,7 @@ def launch_webdriver(url):
     # 打開一個網頁
     update_message(" 開啟網頁 " + url)
     webbrowser.open_new_tab(url)
-    # if "play.games.dmm.co.jp" in url:
+    # if "games.dmm" in url:
     #     # 指定用 Edge 開啟
     #     os.startfile(f"microsoft-edge:{url}")
     # else:
@@ -992,6 +1009,8 @@ def memory_watchdog(max_gb=1, check_interval=5):
             time.sleep(1)  # 讓訊息送出去
             os.kill(os.getpid(), 9)
         time.sleep(check_interval)
+
+
 
 if __name__ == "__main__":
     t = threading.Thread(target=memory_watchdog, args=(1, 5), daemon=True)
