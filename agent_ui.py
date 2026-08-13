@@ -29,6 +29,8 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QRect, pyqtSignal
 from PyQt5.QtGui import QPainter, QPen, QImage, QPixmap, QColor
 
+from tkinter import Menu
+
 # ── 第三方：圖像與 OCR ────────────────────────────────────
 from PIL import Image, ImageGrab
 import pytesseract
@@ -252,10 +254,28 @@ def command_menu(game_folder,app):
             command=lambda k=key: execute_command(k, folder_path, win)
         )
         btn.grid(row=row, column=col, padx=10, pady=10, sticky="nsew")
+        btn.bind("<Button-3>", lambda e, k=key: show_step_menu(k, folder_path, win, e))
 
     # 讓兩欄平均分配寬度
     frame.grid_columnconfigure(0, weight=1)
     frame.grid_columnconfigure(1, weight=1)
+
+def show_step_menu(command_name, folder_path, win, event):
+    commands = load_commands(os.path.join(folder_path, "commands.txt"))
+    if command_name not in commands:
+        return
+    steps = commands[command_name]
+    if not steps:
+        return
+
+    menu = Menu(win, tearoff=0)
+    for idx, step in enumerate(steps):
+        menu.add_command(
+            label=step,
+            command=lambda i=idx: send_command_to_core(folder_path, command_name, win.title(), start_index=i)
+        )
+    menu.tk_popup(event.x_root, event.y_root)
+    menu.grab_release()
 
 def execute_command(command_name,  folder_path, win):
     if command_name =='inputByClipboard' :
@@ -321,34 +341,35 @@ def execute_command(command_name,  folder_path, win):
     send_command_to_core(folder_path, command_name,win.title())
 
 
-def send_command_to_core(folder_path, command_name, win_name):
-    """透過 TCP Socket 把訊息送給 core"""
-
+def send_command_to_core(folder_path, command_name, win_name, start_index=None, retry=True):
     host = "127.0.0.1"
-    port = 5200  # core 的 server port
-
+    port = 5200
     message = {
         "folder": folder_path,
         "command": command_name,
         "win_name": win_name
     }
+    if start_index is not None:
+        message["start_index"] = start_index
 
     try:
         data = json.dumps(message).encode("utf-8")
-
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.connect((host, port))
             s.sendall(data)
-
         print(f"✅ 已送給 core: {message}")
-
     except OSError as e:
         if e.winerror == 10061:
+            if not retry:
+                print("❌ Core 啟動後仍無法連線，放棄重試（core 可能有 bug）")
+                return
+            if command_name == "closeCore":
+                return
             print("⚠ Core 未啟動，嘗試以管理員身份啟動...")
             core_path = os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), "agent_core.exe")
             ctypes.windll.shell32.ShellExecuteW(None, "runas", core_path, None, None, 1)
             time.sleep(5)
-            send_command_to_core(folder_path, command_name, win_name)
+            send_command_to_core(folder_path, command_name, win_name, start_index, retry=False)
         else:
             print(f"❌ 無法送訊息給 core: {e}")
 
@@ -400,6 +421,7 @@ def main_menu():
     frame.grid_columnconfigure(1, weight=1, uniform="col")
 
     app.mainloop()
+
 
 
 class FilenameDialog(QDialog):

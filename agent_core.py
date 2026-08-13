@@ -64,6 +64,8 @@ def load_config(path):
 
 CONFIG = load_config(CONFIG_PATH)
 
+cl = None
+
 def get_obs_client():
     global cl
     try:
@@ -75,10 +77,8 @@ def get_obs_client():
         )
     except ConnectionRefusedError:
         print("OBS 未開啟或 WebSocket 伺服器未啟用")
-        return None
+        cl = None
     return cl
-
-cl = get_obs_client()
 
 STOP_EVENT = threading.Event()
 NEXT_EVENT = threading.Event()
@@ -93,13 +93,13 @@ WAIT_TOKEN = None  # 全域或放在 controller 裡
 def esc_pressed():
     STOP_EVENT.set()
     NEXT_EVENT.set()
-    update_message("⛔ 偵測到 ESC,終止所有指令")
+    threading.Thread(target=update_message, args=("⛔ 偵測到 ESC,終止所有指令",), daemon=True).start()  # ★
 
 keyboard.add_hotkey('esc', esc_pressed, suppress=False)
 
 def tab_pressed():
     NEXT_EVENT.set()
-    update_message("⛔ 偵測到 TAB,執行下一個指令")
+    threading.Thread(target=update_message, args=("⛔ 偵測到 TAB,執行下一個指令",), daemon=True).start()  # ★
 
 keyboard.add_hotkey('tab', tab_pressed, suppress=False)
 
@@ -107,7 +107,7 @@ def space_pressed():
     if not PAUSE_EVENT.is_set():
         PAUSE_EVENT.set()
         NEXT_EVENT.set()
-        update_message("⛔ 偵測到 space,暫停目前指令")
+        threading.Thread(target=update_message, args=("⛔ 偵測到 space,暫停目前指令",), daemon=True).start()  # ★
 
 keyboard.add_hotkey('space', space_pressed, suppress=False)
 
@@ -238,6 +238,7 @@ def update_message(text, win_name="cmd"):
         })
 
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(0.3)          # ★ 新增
             s.connect((host, port))
             s.sendall(message.encode("utf-8"))
 
@@ -370,7 +371,7 @@ def match_ocr_value(ocr_text, required_text):
     return required_text in ocr_text  
 
 # 執行模組/指令
-def execute_command(command_name, commands, folder_path):
+def execute_command(command_name, commands, folder_path, start_index=0):
     update_message(f"開始執行 '{command_name}'",folder_path)
     if command_name not in commands:
         update_message(f"❌ 找不到指令 {command_name}",folder_path)
@@ -379,7 +380,14 @@ def execute_command(command_name, commands, folder_path):
     STOP_EVENT.clear()
     PAUSE_EVENT.clear()
 
-    steps = expand_steps(commands[command_name], commands)
+    raw_steps = commands[command_name]
+    steps = expand_steps(raw_steps, commands)
+
+     # 把「未展開序號」換算成「展開後序號」
+    if start_index > 0:
+        expanded_start = len(expand_steps(raw_steps[:start_index], commands))
+    else:
+        expanded_start = 0
     # 這裡檢查第一層參數輸入正不正確
     match = re.match(r'>check_record_(\w)(\d+)', steps[0])
     if match:
@@ -433,7 +441,7 @@ def execute_command(command_name, commands, folder_path):
         )
 
     # 從第一步開始
-    check(0,"Next")
+    check(expanded_start,"Next")
 
 # 等待到某個時間點
 def wait_until_time(target_time, on_done=None):
@@ -862,34 +870,75 @@ def wait_until_image(task: WaitImageTask):
         update_message(f"🔍 等待圖片：{imgOrder.image_part}.png (目標倒數第 {imgOrder.target_index * -1} 個)",folder_path)
     
     start = time.time()
+    result_ready = threading.Event()
+    result_box = {}
+
     def callback(center):
-        """子線程找到圖片就會呼叫"""             # ← 用傳進來的共享 lock
         if thread_event.is_set():
             return
+        result_box["center"] = center
+        result_ready.set()
+
+    while True:
+        result_ready.clear()
+        find_target_img(imgOrder, thread_event, callback)
+        result_ready.wait()  # find_target_img 內部同步或用OCR子執行緒回呼
+
+        if thread_event.is_set():
+            return
+
         if NEXT_EVENT.is_set():
-            with task.lock:  
+            with task.lock:
                 thread_event.set()
-            if on_done : on_done(False,"Next",mode)
-            return        
+            if on_done: on_done(False, "Next", mode)
+            return
+
+        center = result_box.get("center")
         if center:
-            update_message(f"✅ 找到 {imgOrder.image_part}.png",folder_path)
-            with task.lock:  
+            update_message(f"✅ 找到 {imgOrder.image_part}.png", folder_path)
+            with task.lock:
                 thread_event.set()
             if on_done: on_done(center, "Next", mode)
             return
+
         if time.time() - start >= timeout and not wait_forever:
             update_message(f"⏳ 等待 {imgOrder.image_part}.png 超時 {timeout} 秒")
-            with task.lock:  
+            with task.lock:
                 thread_event.set()
             if backup_plan == "Next": PAUSE_EVENT.set()
             if on_done: on_done(False, backup_plan)
             return
+
         interval = get_poll_interval(timeout, wait_forever)
         NEXT_EVENT.wait(timeout=interval)
-        find_target_img(imgOrder, thread_event, callback)
+    # def callback(center):
+    #     """子線程找到圖片就會呼叫"""             # ← 用傳進來的共享 lock
+    #     if thread_event.is_set():
+    #         return
+    #     if NEXT_EVENT.is_set():
+    #         with task.lock:  
+    #             thread_event.set()
+    #         if on_done : on_done(False,"Next",mode)
+    #         return        
+    #     if center:
+    #         update_message(f"✅ 找到 {imgOrder.image_part}.png",folder_path)
+    #         with task.lock:  
+    #             thread_event.set()
+    #         if on_done: on_done(center, "Next", mode)
+    #         return
+    #     if time.time() - start >= timeout and not wait_forever:
+    #         update_message(f"⏳ 等待 {imgOrder.image_part}.png 超時 {timeout} 秒")
+    #         with task.lock:  
+    #             thread_event.set()
+    #         if backup_plan == "Next": PAUSE_EVENT.set()
+    #         if on_done: on_done(False, backup_plan)
+    #         return
+    #     interval = get_poll_interval(timeout, wait_forever)
+    #     NEXT_EVENT.wait(timeout=interval)
+    #     find_target_img(imgOrder, thread_event, callback)
 
-    # 單次呼叫，所有 OCR 都在子線程
-    find_target_img(imgOrder, thread_event, callback)
+    # # 單次呼叫，所有 OCR 都在子線程
+    # find_target_img(imgOrder, thread_event, callback)
     
 def get_poll_interval(timeout, wait_forever):
     if wait_forever:
@@ -973,6 +1022,7 @@ def start_socket_server():
 def process_server_data(data):
     folder_path = data.get("folder")
     command_name = data.get("command")
+    start_index = data.get("start_index", 0)   # ← 新增
 
     if not folder_path or not command_name:
         
@@ -992,8 +1042,8 @@ def process_server_data(data):
     commands = load_commands(commands_file)
    
     if command_name in commands:
-        print(f"執行指令: {command_name} 在資料夾 {folder_path}")
-        execute_command(command_name, commands, folder_path)
+        print(f"執行指令: {command_name} 在資料夾 {folder_path}，起始步驟 {start_index}")
+        execute_command(command_name, commands, folder_path, start_index)
     else:
         print(f"❌ 指令不存在: {command_name}")
 
@@ -1013,6 +1063,7 @@ def memory_watchdog(max_gb=1, check_interval=5):
 
 
 if __name__ == "__main__":
-    t = threading.Thread(target=memory_watchdog, args=(1, 5), daemon=True)
+    t = threading.Thread(target=memory_watchdog, args=(0.5, 5), daemon=True)
     t.start()
+    threading.Thread(target=get_obs_client, daemon=True).start()
     start_socket_server()
