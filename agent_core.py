@@ -10,6 +10,9 @@ import uuid
 import webbrowser
 from datetime import datetime, timedelta
 from dataclasses import dataclass
+import requests
+import base64
+from io import BytesIO
 
 # ── 第三方：自動化控制 ────────────────────────────────────
 import pyautogui
@@ -192,9 +195,14 @@ def analysis_img_order(step,folder_path):
     image_part = step
     target_index = 1
     size = 1.0
+    ai = False
 
     if image_part.endswith(("?", "↑", "✓")):
         image_part = image_part[:-1]
+    match = re.match(r'AI\((.+)\)', image_part)    
+    if match:
+        ai=True
+        image_part = match.group(1)
 
     # 一次找出所有 @xxx #xxx %xxx 片段（任意順序）
     tokens = re.findall(r'[@#%][^@#%]+', image_part)
@@ -208,7 +216,7 @@ def analysis_img_order(step,folder_path):
             target_index = int(token[1:])
         elif token.startswith('%'):
             size = float(token[1:])
-    return ImgOrderResult(folder_path,image_part, target_index, required_text, size)
+    return ImgOrderResult(folder_path,image_part, target_index, required_text, size,ai)
 
 def backup_plan_and_timeOut(step):
     backup_plan = "Next"
@@ -268,6 +276,7 @@ class ImgOrderResult:
     target_index: int
     required_text: str | bool
     size: float
+    ai : bool
 
 def apply_nms(locations, overlap_thresh=0.3):
     if not locations:
@@ -288,7 +297,7 @@ def scale_image(img, scale):
     interp = cv2.INTER_AREA if scale < 1 else cv2.INTER_LINEAR
     return cv2.resize(img, (int(w * scale), int(h * scale)), interpolation=interp)
 
-def find_target_img(imgOrder,thread_event,on_done=None):
+def find_ui_by_img(imgOrder):
     full_path = os.path.join(imgOrder.folder_path, f"{imgOrder.image_part}.png")
     print(full_path)
     img = cv2.imdecode(np.fromfile(full_path, dtype=np.uint8), cv2.IMREAD_COLOR)
@@ -302,9 +311,18 @@ def find_target_img(imgOrder,thread_event,on_done=None):
         locations = []
     # ← NMS 過濾重疊位置
     locations = apply_nms(locations)
+    return locations
+
+def find_target_img(imgOrder,thread_event,on_done=None):
+    if imgOrder.ai:
+        position = find_ui_element(pyautogui.screenshot(), imgOrder.image_part)
+        if on_done: on_done(position)
+        return
+    locations = find_ui_by_img(imgOrder)
     if not locations:
         if on_done : on_done(None)
         return
+            
     if imgOrder.target_index < 0 : imgOrder.target_index += len(locations)+1
     if imgOrder.target_index > len(locations):
         update_message(f"⚠ 找到 {len(locations)} 個，但沒有第 {imgOrder.target_index} 個")
@@ -414,6 +432,16 @@ def execute_command(command_name, commands, folder_path, start_index=0):
             comName = re.match(r'callcommand:(.+)', backup_plan).group(1)
             execute_command(comName, commands, folder_path)
             return
+        if backup_plan.lower().startswith('call:'):
+            comName = re.match(r'call:(.+)', backup_plan).group(1)
+            execute_command(comName, commands, folder_path)
+            return
+        match backup_plan:
+            case "Previous"|"Ensure":
+                index -= 2
+            case "skipNext":
+                index += 1    
+        
         if index >= len(steps):
             update_message(f"{command_name}指令已完成",folder_path)
             return
@@ -427,11 +455,7 @@ def execute_command(command_name, commands, folder_path, start_index=0):
             pause_script(lambda : check(max(index-1, 0),"Next"))
             # 等待使用者解除暫停後再呼叫 check
             return
-        match backup_plan:
-            case "Previous"|"Ensure":
-                index -= 2
-            case "skipNext":
-                index += 1        
+            
         
         # 執行當前步驟，完成後自動呼叫下一步
         execute_one_step(
@@ -558,7 +582,10 @@ def execute_one_step(step,folder_path,on_done=None):
     if step.lower() == 'nextcommand' :  
         if on_done: on_done("skipNext")
         return
-    if step.lower().startswith('callcommand:'):  
+    if step.lower() == 'previouscommand' :  
+            if on_done: on_done("previous")
+            return
+    if step.lower().startswith('callcommand:') or step.lower().startswith('call:'):  
         if on_done: on_done(step)
         return
     
@@ -858,17 +885,19 @@ def wait_until_image(task: WaitImageTask):
     """非阻塞等待圖片，找到後呼叫 on_done(result)"""
 
     imgOrder = analysis_img_order(step,folder_path)
-    full_path = os.path.join(folder_path, f"{imgOrder.image_part}.png")
-    # ✅ 檢查檔案是否存在
-    if not os.path.exists(full_path):
-        update_message(f"❌ 找不到檔案: {full_path}")
-        if on_done :on_done(False,"Pause")
-        return 
+
+    if not imgOrder.ai:
+        full_path = os.path.join(folder_path, f"{imgOrder.image_part}.png")
+        # ✅ 檢查檔案是否存在
+        if not os.path.exists(full_path):
+            update_message(f"❌ 找不到檔案: {full_path}")
+            if on_done :on_done(False,"Pause")
+            return 
     if imgOrder.target_index > 0 :
         update_message(f"🔍 等待圖片：{imgOrder.image_part}.png (目標第 {imgOrder.target_index} 個)",folder_path)
     else:
         update_message(f"🔍 等待圖片：{imgOrder.image_part}.png (目標倒數第 {imgOrder.target_index * -1} 個)",folder_path)
-    
+
     start = time.time()
     result_ready = threading.Event()
     result_box = {}
@@ -911,34 +940,6 @@ def wait_until_image(task: WaitImageTask):
 
         interval = get_poll_interval(timeout, wait_forever)
         NEXT_EVENT.wait(timeout=interval)
-    # def callback(center):
-    #     """子線程找到圖片就會呼叫"""             # ← 用傳進來的共享 lock
-    #     if thread_event.is_set():
-    #         return
-    #     if NEXT_EVENT.is_set():
-    #         with task.lock:  
-    #             thread_event.set()
-    #         if on_done : on_done(False,"Next",mode)
-    #         return        
-    #     if center:
-    #         update_message(f"✅ 找到 {imgOrder.image_part}.png",folder_path)
-    #         with task.lock:  
-    #             thread_event.set()
-    #         if on_done: on_done(center, "Next", mode)
-    #         return
-    #     if time.time() - start >= timeout and not wait_forever:
-    #         update_message(f"⏳ 等待 {imgOrder.image_part}.png 超時 {timeout} 秒")
-    #         with task.lock:  
-    #             thread_event.set()
-    #         if backup_plan == "Next": PAUSE_EVENT.set()
-    #         if on_done: on_done(False, backup_plan)
-    #         return
-    #     interval = get_poll_interval(timeout, wait_forever)
-    #     NEXT_EVENT.wait(timeout=interval)
-    #     find_target_img(imgOrder, thread_event, callback)
-
-    # # 單次呼叫，所有 OCR 都在子線程
-    # find_target_img(imgOrder, thread_event, callback)
     
 def get_poll_interval(timeout, wait_forever):
     if wait_forever:
@@ -1022,25 +1023,28 @@ def start_socket_server():
 def process_server_data(data):
     folder_path = data.get("folder")
     command_name = data.get("command")
-    start_index = data.get("start_index", 0)   # ← 新增
+    step_text = data.get("step")          # ★ 新增：臨時指令文字
+    start_index = data.get("start_index", 0)
 
-    if not folder_path or not command_name:
-        
+    if not folder_path or (not command_name and not step_text):
         paramaters = data.get("paramaters")
-        if not paramaters :
+        if not paramaters:
             print("❌ 收到無效訊息:", data)
             return
         global UI_INPUT_RESULT
-        # 取得 UI 傳回的參數陣列，防呆預設為空陣列
         UI_INPUT_RESULT = paramaters if isinstance(paramaters, list) else [paramaters]
         print(f"📥 收到 UI 回傳的參數: {UI_INPUT_RESULT}")
-        
-        # 喚醒正在 expand_steps 裡等待的執行緒
         UI_INPUT_EVENT.set()
         return
+
     commands_file = os.path.join(folder_path, "commands.txt")
     commands = load_commands(commands_file)
-   
+
+    if step_text:                          # ★ 新增：不寫檔，臨時塞進 commands 字典
+        commands["_interim"] = [s.strip() for s in step_text.split(",")]
+        execute_command("_interim", commands, folder_path)
+        return
+
     if command_name in commands:
         print(f"執行指令: {command_name} 在資料夾 {folder_path}，起始步驟 {start_index}")
         execute_command(command_name, commands, folder_path, start_index)
@@ -1059,6 +1063,30 @@ def memory_watchdog(max_gb=1, check_interval=5):
             time.sleep(1)  # 讓訊息送出去
             os.kill(os.getpid(), 9)
         time.sleep(check_interval)
+
+def find_ui_element(pil_image, description, timeout=15):
+    """呼叫本地 moondream 服務找 UI 元素座標，回傳 (x, y) 螢幕像素座標，找不到回傳 None"""
+    buf = BytesIO()
+    pil_image.save(buf, format="PNG")
+    b64 = base64.b64encode(buf.getvalue()).decode()
+
+    try:
+        resp = requests.post(CONFIG['MOONDREAM_URL'], json={
+            "image_url": f"data:image/png;base64,{b64}",
+            "object": description
+        }, timeout=timeout)
+        data = resp.json()
+    except Exception:
+        return None
+
+    points = data.get("points")
+    if not points:
+        return None
+
+    w, h = pil_image.size
+    x_ratio = points[0]["x"]
+    y_ratio = points[0]["y"]
+    return int(x_ratio * w), int(y_ratio * h)
 
 
 
