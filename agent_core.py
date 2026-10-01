@@ -13,6 +13,8 @@ from dataclasses import dataclass
 import requests
 import base64
 from io import BytesIO
+from collections import namedtuple
+Box = namedtuple("Box", "left top width height")
 
 # ── 第三方：自動化控制 ────────────────────────────────────
 import pyautogui
@@ -24,6 +26,8 @@ import pyperclip
 import cv2
 import numpy as np
 import pytesseract
+import winocr
+from PIL import Image
 
 # ── 第三方：系統與網路 ────────────────────────────────────
 import win32gui
@@ -31,6 +35,7 @@ import win32con
 import socket
 import psutil
 import obsws_python as obs
+import win32process  # 加在檔案頂部 import 區
 
 # 確保目前目錄就是腳本位置
 os.chdir(os.path.dirname(os.path.abspath(sys.argv[0])))
@@ -46,6 +51,9 @@ DEFAULT_CONFIG = {
     "timeout_retry": 0.4,        # ↑ 模式超時秒數
     "poll_interval_medium": 0.2, # timeout<=2.0 時的輪詢間隔
     "poll_interval_normal": 0.6, # 一般輪詢間隔
+    "ocr_langs": ["zh-Hant", "en", "ja"],   # ★ 新增：依序嘗試的OCR語言
+    "confidence": 0.8,
+    "OCRconfidence": 0.6
 }
 
 def load_config(path):
@@ -128,7 +136,8 @@ def load_commands(file_path):
                 continue
             if ":" in line:
                 name, content = line.split(":", 1)
-                steps = content.strip("{}").split(",")
+                content = content.strip("{}")
+                steps = re.findall(r'"[^"]*"|[^,]+', content)   # ← 唯一改動
                 commands[name.strip()] = [s.strip() for s in steps]
     return commands
 
@@ -196,6 +205,7 @@ def analysis_img_order(step,folder_path):
     target_index = 1
     size = 1.0
     ai = False
+    text_mode = False
 
     if image_part.endswith(("?", "↑", "✓")):
         image_part = image_part[:-1]
@@ -203,6 +213,10 @@ def analysis_img_order(step,folder_path):
     if match:
         ai=True
         image_part = match.group(1)
+    match = re.match(r'Text\((.+)\)(.*)', image_part)
+    if match:
+        text_mode = True
+        image_part = match.group(1) + match.group(2)  # 保留括號後面的 #/@/% token
 
     # 一次找出所有 @xxx #xxx %xxx 片段（任意順序）
     tokens = re.findall(r'[@#%][^@#%]+', image_part)
@@ -216,7 +230,7 @@ def analysis_img_order(step,folder_path):
             target_index = int(token[1:])
         elif token.startswith('%'):
             size = float(token[1:])
-    return ImgOrderResult(folder_path,image_part, target_index, required_text, size,ai)
+    return ImgOrderResult(folder_path,image_part, target_index, required_text, size,ai, text_mode)
 
 def backup_plan_and_timeOut(step):
     backup_plan = "Next"
@@ -277,6 +291,7 @@ class ImgOrderResult:
     required_text: str | bool
     size: float
     ai : bool
+    text: bool = False
 
 def apply_nms(locations, overlap_thresh=0.3):
     if not locations:
@@ -297,6 +312,24 @@ def scale_image(img, scale):
     interp = cv2.INTER_AREA if scale < 1 else cv2.INTER_LINEAR
     return cv2.resize(img, (int(w * scale), int(h * scale)), interpolation=interp)
 
+def find_text_on_screen(target_text):
+    """用 OCR 掃描整個螢幕，回傳所有包含 target_text 的位置(Box 清單)"""
+    screenshot = pyautogui.screenshot()
+    try:
+        data = pytesseract.image_to_data(
+            screenshot, lang="chi_tra+eng+jpn", output_type=pytesseract.Output.DICT
+        )
+    except RuntimeError:
+        update_message("⚠️ OCR逾時")
+        return []
+
+    locations = []
+    for i, word in enumerate(data['text']):
+        word = word.strip()
+        if word and target_text in word:
+            locations.append(Box(data['left'][i], data['top'][i], data['width'][i], data['height'][i]))
+    return locations
+
 def find_ui_by_img(imgOrder):
     full_path = os.path.join(imgOrder.folder_path, f"{imgOrder.image_part}.png")
     print(full_path)
@@ -305,7 +338,7 @@ def find_ui_by_img(imgOrder):
     if imgOrder.size != 1.0:
         img = scale_image(img, imgOrder.size)
     try:
-        locations = list(pyautogui.locateAllOnScreen(img, confidence=0.8))
+        locations = list(pyautogui.locateAllOnScreen(img, confidence=CONFIG["confidence"]))
     except Exception as e:
         #print(f"❌ 處理錯誤: {e}")
         locations = []
@@ -318,7 +351,10 @@ def find_target_img(imgOrder,thread_event,on_done=None):
         position = find_ui_element(pyautogui.screenshot(), imgOrder.image_part)
         if on_done: on_done(position)
         return
-    locations = find_ui_by_img(imgOrder)
+    if imgOrder.text:
+        locations = apply_nms(find_text_on_screen(imgOrder.image_part))
+    else:
+        locations = find_ui_by_img(imgOrder)
     if not locations:
         if on_done : on_done(None)
         return
@@ -345,7 +381,7 @@ def find_target_img(imgOrder,thread_event,on_done=None):
         screenshot = pyautogui.screenshot(region=region)
         # 把 OCR 結果轉成文字
         try:
-            text = pytesseract.image_to_string(screenshot, lang="chi_tra+eng+jpn").strip()
+            text = pytesseract.image_to_string(screenshot, lang="jpn+chi_tra+eng").strip()
         except RuntimeError:
             update_message("⚠️ OCR逾時")
             return
@@ -368,6 +404,21 @@ def find_target_img(imgOrder,thread_event,on_done=None):
     for loc in locations:
         t = threading.Thread(target=ocr_task, args=(loc,), daemon=True)
         t.start()
+
+def ocr_recognize(pil_image, langs=None):
+    """依序用多個語言模型辨識，回傳字數最多（視為較完整/較可能正確）的結果"""
+    langs = langs or CONFIG["ocr_langs"]
+    best_text = ""
+    for lang in langs:
+        try:
+            result = winocr.recognize_pil_sync(pil_image, lang)
+            text = result["text"].strip()
+        except Exception as e:
+            update_message(f"⚠ winocr({lang}) 辨識失敗: {e}")
+            continue
+        if len(text) > len(best_text):
+            best_text = text
+    return best_text
 
 def match_ocr_value(ocr_text, required_text):
     # 提取 OCR 裡的數字
@@ -659,6 +710,37 @@ def execute_one_step(step,folder_path,on_done=None):
         pyautogui.scroll(500 if step == "scrollUp" else -500)
         if on_done:on_done()
         return
+  
+    # -------------判斷其他條件-------------
+    if re.search(r'(\w+)-(\w+)->(.+)', step):            
+        check_condition(step,folder_path,on_done)
+        return
+    #-------------處理視窗------------------------
+    if re.match(r'minimize->(.+)', step):
+        arg = re.match(r'minimize->(.+)', step).group(1)
+        if arg.lower().endswith(".exe"):
+            control_game_window(None, "min", exe_name=arg)
+        else:
+            control_game_window(arg, "min")
+        if on_done: on_done()
+        return
+    if re.match(r'focus->(.+)', step):
+        arg = re.match(r'focus->(.+)', step).group(1)
+        if arg.lower().endswith(".exe"):
+            control_game_window(None, "focus", exe_name=arg)
+        else:
+            control_game_window(arg, "focus")
+        if on_done: on_done()
+        return
+    if re.match(r'close->(.+)', step):
+        arg = re.match(r'close->(.+)', step).group(1)
+        if arg.lower().endswith(".exe"):
+            control_game_window(None, "close", exe_name=arg)
+        else:
+            control_game_window(arg, "close")
+        if on_done: on_done()
+        return
+    #-----------------處理網頁與開啟-------------------------------
     if step.startswith(("http://", "https://")):
         launch_webdriver(step)
         if on_done:on_done()
@@ -668,26 +750,12 @@ def execute_one_step(step,folder_path,on_done=None):
         launch_app(step)
         if on_done: on_done()
         return
-    # 判斷其他條件    
-    if re.search(r'(\w+)-(\w+)->(.+)', step):            
-        check_condition(step,folder_path,on_done)
-        return
-    if re.match(r'minimize->(.+)', step):
-        processName = re.match(r'minimize->(.+)', step).group(1)
-        update_message(f"最小化{processName}視窗")
-        control_game_window(processName,"min")
-        if on_done:on_done()
-        return
-    if re.match(r'focus->(.+)', step):
-        processName = re.match(r'focus->(.+)', step).group(1)
-        control_game_window(processName,"focus")
+        # 🔹 檢查資料夾是否存在並開啟
+    if os.path.isdir(step):
+        launch_app(step)
         if on_done: on_done()
         return
-    if re.match(r'close->(.+)', step):
-        processName = re.match(r'close->(.+)', step).group(1)
-        control_game_window(processName,"close")
-        if on_done: on_done()
-        return
+    #------------------------------------------------------------
     if re.match(r'match->(.+)', step):
         image_name = re.match(r'match->(.+)', step).group(1)
         calibrate_match(image_name, folder_path, on_done)
@@ -831,7 +899,7 @@ def enter_captcha(step, folder_path,on_done):
     img = cv2.imdecode(np.fromfile(captcha_image_path, dtype=np.uint8), cv2.IMREAD_COLOR)
     # 找 captcha 圖片並辨識
     try:
-        captcha_matches = list(pyautogui.locateAllOnScreen(img, confidence=0.6))
+        captcha_matches = list(pyautogui.locateAllOnScreen(img, confidence=CONFIG["OCRconfidence"]))
     except Exception:
         captcha_matches = []
     if not captcha_matches:
@@ -850,6 +918,10 @@ def enter_captcha(step, folder_path,on_done):
 
         text = pytesseract.image_to_string(thresh, lang="eng", config=custom_config).strip()
         text = re.sub(r'\s+', '', text)
+        # pil_img = Image.fromarray(thresh)
+
+        # raw_text = ocr_recognize(pil_img, langs=["en"])  # 驗證碼固定英文字母，只需一個語言
+        # text = re.sub(r'[^a-zA-Z]', '', raw_text)
         update_message(f"📄 OCR辨識結果: {text}")
         # 用#來判斷要輸入幾碼
         if len(text) == count :
@@ -857,7 +929,7 @@ def enter_captcha(step, folder_path,on_done):
     # 找輸入框圖片並輸入
     img = cv2.imdecode(np.fromfile(input_box_path, dtype=np.uint8), cv2.IMREAD_COLOR)
     try:
-        input_matches = list(pyautogui.locateAllOnScreen(img, confidence=0.8))
+        input_matches = list(pyautogui.locateAllOnScreen(img, confidence=CONFIG["confidence"]))
     except Exception:
         input_matches = []
     if not input_matches:
@@ -873,6 +945,8 @@ def enter_captcha(step, folder_path,on_done):
     pyautogui.write(text)  # 立即輸入所有文字
     if on_done: on_done()
 
+
+
 def wait_until_image(task: WaitImageTask):
     step = task.step
     folder_path = task.folder_path
@@ -886,17 +960,18 @@ def wait_until_image(task: WaitImageTask):
 
     imgOrder = analysis_img_order(step,folder_path)
 
-    if not imgOrder.ai:
+    if not imgOrder.ai and not imgOrder.text:
         full_path = os.path.join(folder_path, f"{imgOrder.image_part}.png")
         # ✅ 檢查檔案是否存在
         if not os.path.exists(full_path):
             update_message(f"❌ 找不到檔案: {full_path}")
             if on_done :on_done(False,"Pause")
             return 
+    label = f"{imgOrder.image_part}.png" if not imgOrder.text else '文字'
     if imgOrder.target_index > 0 :
-        update_message(f"🔍 等待圖片：{imgOrder.image_part}.png (目標第 {imgOrder.target_index} 個)",folder_path)
+        update_message(f"🔍 等待{label} (目標第 {imgOrder.target_index} 個)",folder_path)
     else:
-        update_message(f"🔍 等待圖片：{imgOrder.image_part}.png (目標倒數第 {imgOrder.target_index * -1} 個)",folder_path)
+        update_message(f"🔍 等待{label} (目標倒數第 {imgOrder.target_index * -1} 個)",folder_path)
 
     start = time.time()
     result_ready = threading.Event()
@@ -965,24 +1040,42 @@ def launch_webdriver(url):
 def launch_app(url):
     subprocess.run(["start", url], shell=True)
 
-def control_game_window(processName,operate):
+def control_game_window(processName, operate, exe_name=None):
+    """
+    processName: 視窗標題關鍵字(原本邏輯)
+    exe_name: 選填，指定執行檔名稱(例如 "BrownDust2.exe")時改用精準比對
+    """
+    target_exe = exe_name.lower() if exe_name else None
+
     def enum_handler(hwnd, _):
         if not win32gui.IsWindowVisible(hwnd):
             return
 
+        if target_exe:
+            try:
+                _, pid = win32process.GetWindowThreadProcessId(hwnd)
+                exe = psutil.Process(pid).name().lower()
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                return
+            if exe != target_exe:
+                return
+        else:
+            title = win32gui.GetWindowText(hwnd)
+            if processName not in title:
+                return
+
         title = win32gui.GetWindowText(hwnd)
-        if processName in title:
-            if operate == "min":
-                win32gui.ShowWindow(hwnd, win32con.SW_MINIMIZE)
-                update_message(f"已最小化視窗: {title}")
-            if operate == "close":
-                win32gui.PostMessage(hwnd, win32con.WM_CLOSE, 0, 0)
-                update_message(f"已關閉視窗: {title}")
-            if operate == "focus":
-                if win32gui.IsIconic(hwnd):
-                    win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
-                win32gui.SetForegroundWindow(hwnd)
-                update_message(f"已切換至視窗: {title}")
+        if operate == "min":
+            win32gui.ShowWindow(hwnd, win32con.SW_MINIMIZE)
+            update_message(f"已最小化視窗: {title}")
+        if operate == "close":
+            win32gui.PostMessage(hwnd, win32con.WM_CLOSE, 0, 0)
+            update_message(f"已關閉視窗: {title}")
+        if operate == "focus":
+            if win32gui.IsIconic(hwnd):
+                win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+            win32gui.SetForegroundWindow(hwnd)
+            update_message(f"已切換至視窗: {title}")
 
     win32gui.EnumWindows(enum_handler, None)
 

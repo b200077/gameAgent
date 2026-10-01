@@ -26,6 +26,32 @@ from PyQt5.QtGui import QPainter, QPen, QImage, QPixmap, QColor
 from PIL import Image
 import pytesseract
 
+import winocr
+
+OCR_LANGS = ["zh-Hant", "en", "ja"]
+
+def ocr_recognize(pil_image, langs=None):
+    """依序用多個語言模型辨識，回傳字數最多的結果"""
+    langs = langs or OCR_LANGS
+    best_text = ""
+    for lang in langs:
+        try:
+            result = winocr.recognize_pil_sync(pil_image, lang)
+            text = result["text"].strip()
+        except Exception:
+            continue
+        if len(text) > len(best_text):
+            best_text = text
+    return best_text
+
+MIN_OCR_SIDE = 100  # 短邊小於這個像素就視為「太小」
+
+def upscale_if_small(pil_image, min_side=MIN_OCR_SIDE, scale=4):
+    """截圖範圍太小時，OCR前先放大，避免辨識失敗"""
+    if min(pil_image.width, pil_image.height) < min_side:
+        new_size = (pil_image.width * scale, pil_image.height * scale)
+        return pil_image.resize(new_size, Image.LANCZOS)
+    return pil_image
 
 def save_commands(name, steps, file_path):
     with open(file_path, "a", encoding="utf-8") as f:
@@ -284,7 +310,9 @@ class ScreenShotWidget(QDialog):
 
         # ---------------- 這邊開始處理圖片 -------------------------
 
-        text = pytesseract.image_to_string(img, lang='jpn+chi_tra+eng').strip()
+        #text = pytesseract.image_to_string(img, lang='jpn+chi_tra+eng').strip()
+        ocr_img = upscale_if_small(img)
+        text = ocr_recognize(ocr_img)
         safe_name = self.sanitize_filename(text)
 
         # 🔹 直接傳 img 物件給 Dialog

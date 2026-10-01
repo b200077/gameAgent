@@ -25,11 +25,29 @@ WEEK_MAP_ORDER = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 # -----------------------
 # 資料存取
 # -----------------------
+# def load_data():
+#     if not os.path.exists(FILE_NAME):
+#         return {}
+#     with open(FILE_NAME, "r", encoding="utf-8") as f:
+#         return json.load(f)
 def load_data():
     if not os.path.exists(FILE_NAME):
         return {}
     with open(FILE_NAME, "r", encoding="utf-8") as f:
-        return json.load(f)
+        data = json.load(f)
+
+    year = datetime.now().year
+    migrated = {}
+    changed = False
+    for k, v in data.items():
+        if not k.startswith("*/") and len(k.split("/")) == 2:
+            k = f"{year}/{k}"
+            changed = True
+        migrated[k] = v
+
+    if changed:
+        save_data(migrated)
+    return migrated
 
 
 def save_data(data):
@@ -39,7 +57,7 @@ def save_data(data):
 
 def get_today():
     now = datetime.now()
-    return f"{now.month}/{now.day}"
+    return f"{now.year}/{now.month}/{now.day}"
 
 
 def get_all_tasks(data):
@@ -55,7 +73,7 @@ def resolve_wildcard(key, d):
         return False
     day_token = key[2:]  # 取 /後面的部分
     try:
-        month, day = map(int, d.split("/"))
+        _, month, day = map(int, d.split("/"))
         day_num = int(day_token)
         if day_num > 0:
             return day == day_num
@@ -88,32 +106,62 @@ def show_dates(data, date_str):
 # -----------------------
 # 🔥 解析日期（支援多選 & 範圍）
 # -----------------------
+# def parse_dates(input_str):
+#     result = []
+#     parts = input_str.split(",")
+
+#     for part in parts:
+#         token = part.strip()
+
+#         # 範圍 3/14~4/2
+#         if "~" in token:
+#             start, end = token.split("~")
+
+#             start_date = datetime.strptime(start, "%m/%d")
+#             end_date = datetime.strptime(end, "%m/%d")
+
+#             # 處理跨年（簡單版）
+#             if end_date < start_date:
+#                 end_date = end_date.replace(year=start_date.year + 1)
+
+#             current = start_date
+#             while current <= end_date:
+#                 result.append(f"{current.month}/{current.day}")
+#                 current += timedelta(days=1)
+
+#         else:
+#             # 單一日期
+#             result.append(token)
+
+#     return result
 def parse_dates(input_str):
     result = []
-    parts = input_str.split(",")
+    current_year = datetime.now().year
 
-    for part in parts:
+    def parse_one(token):
+        segs = token.split("/")
+        if len(segs) == 3:
+            y, m, d = map(int, segs)
+        else:
+            m, d = map(int, segs)
+            y = current_year
+        return datetime(y, m, d)
+
+    for part in input_str.split(","):
         token = part.strip()
-
-        # 範圍 3/14~4/2
         if "~" in token:
             start, end = token.split("~")
-
-            start_date = datetime.strptime(start, "%m/%d")
-            end_date = datetime.strptime(end, "%m/%d")
-
-            # 處理跨年（簡單版）
+            start_date = parse_one(start.strip())
+            end_date = parse_one(end.strip())
             if end_date < start_date:
-                end_date = end_date.replace(year=start_date.year + 1)
-
+                end_date = end_date.replace(year=end_date.year + 1)
             current = start_date
             while current <= end_date:
-                result.append(f"{current.month}/{current.day}")
+                result.append(f"{current.year}/{current.month}/{current.day}")
                 current += timedelta(days=1)
-
         else:
-            # 單一日期
-            result.append(token)
+            d = parse_one(token)
+            result.append(f"{d.year}/{d.month}/{d.day}")
 
     return result
 
@@ -138,7 +186,7 @@ class CalendarDialog(QDialog):
 
     def get_date(self):
         date = self.calendar.selectedDate()
-        return f"{date.month()}/{date.day()}"
+        return f"{date.year()}/{date.month()}/{date.day()}"
 
 
 # -----------------------
