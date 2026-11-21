@@ -10,9 +10,6 @@ import uuid
 import webbrowser
 from datetime import datetime, timedelta
 from dataclasses import dataclass
-import requests
-import base64
-from io import BytesIO
 from collections import namedtuple
 Box = namedtuple("Box", "left top width height")
 
@@ -46,7 +43,7 @@ WEEK_MAP_ORDER= ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"]
 
 CONFIG_PATH = os.path.join(BASE_PATH, "config.json")
 DEFAULT_CONFIG = {
-    "timeout_normal": 15,        # 一般等待圖片超時秒數
+    "timeout_normal": 8,        # 一般等待圖片超時秒數
     "timeout_skip": 1.0,         # ? 模式超時秒數
     "timeout_retry": 0.4,        # ↑ 模式超時秒數
     "poll_interval_medium": 0.2, # timeout<=2.0 時的輪詢間隔
@@ -55,6 +52,9 @@ DEFAULT_CONFIG = {
     "confidence": 0.8,
     "OCRconfidence": 0.6
 }
+
+MIN_OCR_SIDE = 100  # 短邊小於這個像素就視為「太小」
+
 
 def load_config(path):
     """讀取 config.json，缺檔或缺值都用預設值補上，並寫回檔案"""
@@ -98,6 +98,8 @@ PAUSE_EVENT = threading.Event()
 # 新增用於等待 UI 參數輸入的事件與暫存區
 UI_INPUT_EVENT = threading.Event()
 UI_INPUT_RESULT = []
+# AI() 步驟交給 AI 代理處理後，接續用：(指令名, commands, 資料夾, 展開後的下一步序號)
+AI_RESUME = None
 
 WAIT_TOKEN = None  # 全域或放在 controller 裡
 
@@ -204,15 +206,10 @@ def analysis_img_order(step,folder_path):
     image_part = step
     target_index = 1
     size = 1.0
-    ai = False
     text_mode = False
 
     if image_part.endswith(("?", "↑", "✓")):
         image_part = image_part[:-1]
-    match = re.match(r'AI\((.+)\)', image_part)    
-    if match:
-        ai=True
-        image_part = match.group(1)
     match = re.match(r'Text\((.+)\)(.*)', image_part)
     if match:
         text_mode = True
@@ -230,7 +227,7 @@ def analysis_img_order(step,folder_path):
             target_index = int(token[1:])
         elif token.startswith('%'):
             size = float(token[1:])
-    return ImgOrderResult(folder_path,image_part, target_index, required_text, size,ai, text_mode)
+    return ImgOrderResult(folder_path,image_part, target_index, required_text, size, text_mode)
 
 def backup_plan_and_timeOut(step):
     backup_plan = "Next"
@@ -246,10 +243,34 @@ def backup_plan_and_timeOut(step):
     return backup_plan,timeout
 
 
+CORE_MESSAGE_LOG = os.path.abspath("_core_messages.log")
+
+# 記錄只給 ai_run.py 監看當次執行用，每次啟動 core 時清空，避免檔案無限變大
+try:
+    open(CORE_MESSAGE_LOG, "w", encoding="utf-8").close()
+except OSError:
+    pass
+
+
+def append_core_message(text):
+    """記錄失敗不可影響腳本執行，因此忽略檔案錯誤"""
+    line = str(text).replace("\r", " ").replace("\n", " ")
+    if "還剩" in line:
+        return  # 每 0.1 秒一則的倒數計時只佔空間，監看用不到
+    stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        with open(CORE_MESSAGE_LOG, "a", encoding="utf-8") as f:
+            f.write(f"{stamp}\t{line}\n")
+    except OSError:
+        pass
+
+
 def update_message(text, win_name="cmd"):
     """
-    將訊息傳給 UI (使用 TCP Socket)
+    將訊息傳給 UI (使用 TCP Socket)，並寫入記錄檔供外部程式 (ai_run.py) 監看
     """
+    append_core_message(text)
+
     host = "127.0.0.1"
     port = 5201
 
@@ -274,7 +295,7 @@ class WaitImageTask:
     step: str
     folder_path: str
 
-    timeout: float = 15
+    timeout: float = 8
     mode: str = "normal"
     backup_plan: str = "Next"
     wait_forever: bool = False
@@ -290,7 +311,6 @@ class ImgOrderResult:
     target_index: int
     required_text: str | bool
     size: float
-    ai : bool
     text: bool = False
 
 def apply_nms(locations, overlap_thresh=0.3):
@@ -347,10 +367,6 @@ def find_ui_by_img(imgOrder):
     return locations
 
 def find_target_img(imgOrder,thread_event,on_done=None):
-    if imgOrder.ai:
-        position = find_ui_element(pyautogui.screenshot(), imgOrder.image_part)
-        if on_done: on_done(position)
-        return
     if imgOrder.text:
         locations = apply_nms(find_text_on_screen(imgOrder.image_part))
     else:
@@ -379,12 +395,10 @@ def find_target_img(imgOrder,thread_event,on_done=None):
         if thread_event.is_set(): return
         region = (int(loc.left), int(loc.top), int(loc.width), int(loc.height))
         screenshot = pyautogui.screenshot(region=region)
+        ocr_img = upscale_if_small(screenshot)
         # 把 OCR 結果轉成文字
-        try:
-            text = pytesseract.image_to_string(screenshot, lang="jpn+chi_tra+eng").strip()
-        except RuntimeError:
-            update_message("⚠️ OCR逾時")
-            return
+        # text = pytesseract.image_to_string(ocr_img, lang="jpn+chi_tra+eng").strip()
+        text = winocr_recognize(ocr_img)
         text = re.sub(r'\s+', '', text)
         update_message(f"📄 OCR辨識結果: {text}")
         with lock:
@@ -405,20 +419,12 @@ def find_target_img(imgOrder,thread_event,on_done=None):
         t = threading.Thread(target=ocr_task, args=(loc,), daemon=True)
         t.start()
 
-def ocr_recognize(pil_image, langs=None):
-    """依序用多個語言模型辨識，回傳字數最多（視為較完整/較可能正確）的結果"""
-    langs = langs or CONFIG["ocr_langs"]
-    best_text = ""
-    for lang in langs:
-        try:
-            result = winocr.recognize_pil_sync(pil_image, lang)
-            text = result["text"].strip()
-        except Exception as e:
-            update_message(f"⚠ winocr({lang}) 辨識失敗: {e}")
-            continue
-        if len(text) > len(best_text):
-            best_text = text
-    return best_text
+def upscale_if_small(pil_image, min_side=MIN_OCR_SIDE, scale=4):
+    """截圖範圍太小時，OCR前先放大，避免辨識失敗"""
+    if min(pil_image.width, pil_image.height) < min_side:
+        new_size = (pil_image.width * scale, pil_image.height * scale)
+        return pil_image.resize(new_size, Image.LANCZOS)
+    return pil_image
 
 def match_ocr_value(ocr_text, required_text):
     # 提取 OCR 裡的數字
@@ -440,7 +446,7 @@ def match_ocr_value(ocr_text, required_text):
     return required_text in ocr_text  
 
 # 執行模組/指令
-def execute_command(command_name, commands, folder_path, start_index=0):
+def execute_command(command_name, commands, folder_path, start_index=0, expanded_index=None):
     update_message(f"開始執行 '{command_name}'",folder_path)
     if command_name not in commands:
         update_message(f"❌ 找不到指令 {command_name}",folder_path)
@@ -453,7 +459,9 @@ def execute_command(command_name, commands, folder_path, start_index=0):
     steps = expand_steps(raw_steps, commands)
 
      # 把「未展開序號」換算成「展開後序號」
-    if start_index > 0:
+    if expanded_index is not None:
+        expanded_start = expanded_index
+    elif start_index > 0:
         expanded_start = len(expand_steps(raw_steps[:start_index], commands))
     else:
         expanded_start = 0
@@ -493,6 +501,12 @@ def execute_command(command_name, commands, folder_path, start_index=0):
             case "skipNext":
                 index += 1    
         
+        if backup_plan == "AIHandoff":
+            global AI_RESUME
+            AI_RESUME = (command_name, commands, folder_path, index)
+            update_message(f"🤖 {command_name} 停在第 {index} 步（展開後），處理完送 aiContinue 接續",folder_path)
+            return
+
         if index >= len(steps):
             update_message(f"{command_name}指令已完成",folder_path)
             return
@@ -596,7 +610,8 @@ def wait_button(button, on_done=None):
     - ui_queue: 可選，用於回報訊息給 UI
     """
     while True:
-        if NEXT_EVENT.is_set() or keyboard.is_pressed(button):
+        # 多條指令同時等待時，先醒來的會清掉 NEXT_EVENT，所以也要檢查 STOP_EVENT
+        if NEXT_EVENT.is_set() or STOP_EVENT.is_set() or keyboard.is_pressed(button):
             if on_done: on_done()
             return
         NEXT_EVENT.wait(timeout=0.1)  # 可被中斷
@@ -607,7 +622,7 @@ def wait_mouse(button, on_done=None):
     - button: 'left' 或 'right'
     """
     while True:
-        if NEXT_EVENT.is_set() or mouse.is_pressed(button):
+        if NEXT_EVENT.is_set() or STOP_EVENT.is_set() or mouse.is_pressed(button):
             if on_done: on_done()
             return
         NEXT_EVENT.wait(timeout=0.1)  # 可被中斷
@@ -639,7 +654,23 @@ def execute_one_step(step,folder_path,on_done=None):
     if step.lower().startswith('callcommand:') or step.lower().startswith('call:'):  
         if on_done: on_done(step)
         return
-    
+    if step.lower() == 'screenshot':
+        take_screenshot()
+        if on_done: on_done()
+        return
+    region_shot = re.fullmatch(r'screenshot\((.+)\)', step.strip(), re.IGNORECASE)
+    if region_shot:
+        take_region_screenshot(region_shot.group(1), folder_path)
+        if on_done: on_done()
+        return
+    ai_match = re.fullmatch(r'AI(?:\((.*)\))?', step.strip())
+    if ai_match:
+        # 交給 AI 代理：截圖、印出說明後停下，等 aiContinue 從下一步接續
+        take_screenshot()
+        task = (ai_match.group(1) or "").strip() or "（沒有說明，請看截圖判斷）"
+        update_message(f"🤖 AI接手: {task}",folder_path)
+        if on_done: on_done("AIHandoff")
+        return
     #---------------搶票用--------------
     if re.match(r'wait\d{1,2}:\d{2}', step):
         target_time_str = re.findall(r'wait_?(\d{1,2}:\d{2})', step)[0]
@@ -657,11 +688,6 @@ def execute_one_step(step,folder_path,on_done=None):
         update_message(f"⏱ 等待 {button} 按鍵")
         wait_button(button,on_done)
         return
-    # if re.match(r'waitMouse->(.+)', step):
-    #     button = re.match(r'waitMouse->(.+)', step).group(1)
-    #     update_message(f"⏱ 等待滑鼠 {button} 按鍵")
-    #     wait_mouse(button,on_done)
-    #     return
     if step.lower() == 'waitclick':
         # 按一下滑鼠左鍵
         update_message(f"⏱ 等待滑鼠左鍵")
@@ -697,6 +723,18 @@ def execute_one_step(step,folder_path,on_done=None):
         pyautogui.moveRel(x, y)          # 相對移動
         if on_done: on_done()
         return
+    # drag(dx_dy) 或 drag(dx_dy_秒)：從目前位置按住左鍵拖到相對位置，逐步移動讓遊戲能偵測到拖曳
+    match = re.match(r'drag\((\-?\d+)\_(\-?\d+)(?:\_(\d+(?:\.\d+)?))?\)$', step)
+    if match:
+        x, y = int(match.group(1)), int(match.group(2))
+        duration = float(match.group(3)) if match.group(3) else 0.5
+        pyautogui.mouseDown()
+        time.sleep(0.05)
+        pyautogui.moveRel(x, y, duration=duration)
+        time.sleep(0.05)
+        pyautogui.mouseUp()
+        if on_done: on_done()
+        return
     if "@->" in  step:
         enter_captcha(step, folder_path,on_done)
         return
@@ -706,8 +744,11 @@ def execute_one_step(step,folder_path,on_done=None):
         update_message(f"⏱ 等待 {seconds} 秒")
         wait_seconds(seconds,folder_path,on_done)
         return
-    if step in ("scrollUp", "scrollDown"):
-        pyautogui.scroll(500 if step == "scrollUp" else -500)
+    # scrollUp / scrollDown 預設 500，可用 scrollDown(100) 指定捲動量
+    match = re.match(r'(scrollUp|scrollDown)(?:\((\d+)\))?$', step)
+    if match:
+        amount = int(match.group(2)) if match.group(2) else 500
+        pyautogui.scroll(amount if match.group(1) == "scrollUp" else -amount)
         if on_done:on_done()
         return
   
@@ -812,7 +853,7 @@ def pause_script(on_done):
     PAUSE_EVENT.clear()
     wait_button("space",on_done)
 
-def calibrate_match(image_name, folder_path, on_done=None, duration=15, interval=0.5):
+def calibrate_match(image_name, folder_path, on_done=None, duration=60, interval=0.5):
     """視窗校正用：持續印出圖片在目前畫面的匹配率"""
     full_path = os.path.join(folder_path, f"{image_name}.png")
     if not os.path.exists(full_path):
@@ -834,6 +875,20 @@ def calibrate_match(image_name, folder_path, on_done=None, duration=15, interval
         NEXT_EVENT.wait(timeout=interval)
 
     if on_done: on_done()
+
+def winocr_recognize(pil_image, langs=None):
+    """依序用多個語言模型辨識，回傳字數最多的結果"""
+    langs = langs or CONFIG['ocr_langs']
+    best_text = ""
+    for lang in langs:
+        try:
+            result = winocr.recognize_pil_sync(pil_image, lang)
+            text = result["text"].strip()
+        except Exception:
+            continue
+        if len(text) > len(best_text):
+            best_text = text
+    return best_text
     
             
 def check_condition(step,folder_path,on_done=None):
@@ -914,9 +969,10 @@ def enter_captcha(step, folder_path,on_done):
         gray = cv2.resize(gray, None, fx=2, fy=2)  # 放大兩倍
         _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
         # 只允許 a-z
-        custom_config = r'--psm 6 -c tessedit_char_whitelist=abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ'
-
-        text = pytesseract.image_to_string(thresh, lang="eng", config=custom_config).strip()
+        
+        text = winocr_recognize(thresh,"en")
+        #custom_config = r'--psm 6 -c tessedit_char_whitelist=abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ'
+        # text = pytesseract.image_to_string(thresh, lang="eng", config=custom_config).strip()
         text = re.sub(r'\s+', '', text)
         # pil_img = Image.fromarray(thresh)
 
@@ -960,7 +1016,7 @@ def wait_until_image(task: WaitImageTask):
 
     imgOrder = analysis_img_order(step,folder_path)
 
-    if not imgOrder.ai and not imgOrder.text:
+    if not imgOrder.text:
         full_path = os.path.join(folder_path, f"{imgOrder.image_part}.png")
         # ✅ 檢查檔案是否存在
         if not os.path.exists(full_path):
@@ -977,6 +1033,14 @@ def wait_until_image(task: WaitImageTask):
     result_ready = threading.Event()
     result_box = {}
 
+    def claim():
+        # 檢查並設定要在同一個 lock 內完成，避免 a|b 兩條同時找到時都繼續執行
+        with task.lock:
+            if thread_event.is_set():
+                return False
+            thread_event.set()
+            return True
+
     def callback(center):
         if thread_event.is_set():
             return
@@ -991,24 +1055,21 @@ def wait_until_image(task: WaitImageTask):
         if thread_event.is_set():
             return
 
-        if NEXT_EVENT.is_set():
-            with task.lock:
-                thread_event.set()
+        if NEXT_EVENT.is_set() or STOP_EVENT.is_set():
+            if not claim(): return
             if on_done: on_done(False, "Next", mode)
             return
 
         center = result_box.get("center")
         if center:
+            if not claim(): return   # a|b 另一張圖已先找到，這條不再往下執行
             update_message(f"✅ 找到 {imgOrder.image_part}.png", folder_path)
-            with task.lock:
-                thread_event.set()
             if on_done: on_done(center, "Next", mode)
             return
 
         if time.time() - start >= timeout and not wait_forever:
+            if not claim(): return
             update_message(f"⏳ 等待 {imgOrder.image_part}.png 超時 {timeout} 秒")
-            with task.lock:
-                thread_event.set()
             if backup_plan == "Next": PAUSE_EVENT.set()
             if on_done: on_done(False, backup_plan)
             return
@@ -1039,6 +1100,71 @@ def launch_webdriver(url):
     #     webbrowser.open_new_tab(url)
 def launch_app(url):
     subprocess.run(["start", url], shell=True)
+
+def take_screenshot():
+    """截全螢幕存到 <遊戲資料夾>/_screenshot/yyyymmdd_HHMMSS.png"""
+    save_dir = os.path.join(BASE_PATH, "_screenshot")
+    os.makedirs(save_dir, exist_ok=True)
+    path = os.path.join(save_dir, datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3] + ".png")
+    pyautogui.screenshot(path)   # 傳 path 會直接寫檔
+    update_message(f"📸 已截圖: {path}", BASE_PATH)
+    return path
+
+def take_region_screenshot(args, folder_path):
+    """
+    局部截圖，可縮放：
+      screenshot(x_y_w_h)              螢幕絕對座標
+      screenshot(x_y_w_h_縮放)         例：screenshot(540_60_1340_780_0.5)
+      screenshot(圖片_dx_dy_w_h)        以定位圖中心為基準，左上角在 (dx,dy)
+      screenshot(圖片_dx_dy_w_h_縮放)
+    找不到定位圖時只印訊息、不截圖，指令繼續。
+    """
+    parts = args.split("_")
+    nums = []
+    while parts and re.fullmatch(r'-?\d+(\.\d+)?', parts[-1]) and len(nums) < 5:
+        nums.insert(0, parts.pop())
+    anchor = "_".join(parts)
+    if len(nums) == 4:
+        scale = 1.0
+    elif len(nums) == 5:
+        scale = float(nums.pop())
+    else:
+        update_message(f"❌ screenshot 參數格式錯誤: {args}", folder_path)
+        return None
+    x, y, w, h = (int(float(n)) for n in nums)
+
+    if anchor:
+        img_path = os.path.join(folder_path, f"{anchor}.png")
+        if not os.path.exists(img_path):
+            update_message(f"❌ 找不到檔案: {img_path}", folder_path)
+            return None
+        img = cv2.imdecode(np.fromfile(img_path, dtype=np.uint8), cv2.IMREAD_COLOR)
+        try:
+            box = pyautogui.locateOnScreen(img, confidence=CONFIG["confidence"])
+        except Exception:
+            box = None
+        if not box:
+            update_message(f"⚠ 局部截圖找不到定位圖 {anchor}，略過", folder_path)
+            return None
+        cx, cy = pyautogui.center(box)
+        x, y = int(cx) + x, int(cy) + y
+
+    sw, sh = pyautogui.size()
+    x, y = max(0, x), max(0, y)
+    w, h = min(w, sw - x), min(h, sh - y)
+    if w <= 0 or h <= 0:
+        update_message(f"❌ 截圖範圍在螢幕外: {args}", folder_path)
+        return None
+
+    shot = cv2.cvtColor(np.array(pyautogui.screenshot(region=(x, y, w, h))), cv2.COLOR_RGB2BGR)
+    if scale != 1.0:
+        shot = cv2.resize(shot, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+    save_dir = os.path.join(BASE_PATH, "_screenshot")
+    os.makedirs(save_dir, exist_ok=True)
+    path = os.path.join(save_dir, datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3] + ".png")
+    cv2.imencode(".png", shot)[1].tofile(path)
+    update_message(f"📸 已截圖: {path}", BASE_PATH)
+    return path
 
 def control_game_window(processName, operate, exe_name=None):
     """
@@ -1100,7 +1226,13 @@ def start_socket_server():
                     message = data.decode("utf-8").strip()
                     data = json.loads(message)
                     command_name = data.get("command")
-                    if command_name == "closeCore":
+                    if command_name == "stopCommand":
+                        global AI_RESUME
+                        AI_RESUME = None
+                        esc_pressed()
+                    elif command_name == "aiContinue":
+                        resume_after_ai()
+                    elif command_name == "closeCore":
                         print("🛑 收到關閉指令，Core 即將關閉")
                         conn.close()
                         server.close()
@@ -1112,6 +1244,15 @@ def start_socket_server():
                     print("❌ 收到非 JSON 訊息")
                 except Exception as e:
                     print(f"❌ 處理錯誤: {e}")
+
+def resume_after_ai():
+    global AI_RESUME
+    if AI_RESUME is None:
+        update_message("❌ 沒有等待 AI 接手的指令")
+        return
+    command_name, commands, folder_path, index = AI_RESUME
+    AI_RESUME = None
+    execute_command(command_name, commands, folder_path, expanded_index=index)
 
 def process_server_data(data):
     folder_path = data.get("folder")
@@ -1156,32 +1297,6 @@ def memory_watchdog(max_gb=1, check_interval=5):
             time.sleep(1)  # 讓訊息送出去
             os.kill(os.getpid(), 9)
         time.sleep(check_interval)
-
-def find_ui_element(pil_image, description, timeout=15):
-    """呼叫本地 moondream 服務找 UI 元素座標，回傳 (x, y) 螢幕像素座標，找不到回傳 None"""
-    buf = BytesIO()
-    pil_image.save(buf, format="PNG")
-    b64 = base64.b64encode(buf.getvalue()).decode()
-
-    try:
-        resp = requests.post(CONFIG['MOONDREAM_URL'], json={
-            "image_url": f"data:image/png;base64,{b64}",
-            "object": description
-        }, timeout=timeout)
-        data = resp.json()
-    except Exception:
-        return None
-
-    points = data.get("points")
-    if not points:
-        return None
-
-    w, h = pil_image.size
-    x_ratio = points[0]["x"]
-    y_ratio = points[0]["y"]
-    return int(x_ratio * w), int(y_ratio * h)
-
-
 
 if __name__ == "__main__":
     t = threading.Thread(target=memory_watchdog, args=(0.5, 5), daemon=True)

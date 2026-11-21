@@ -77,7 +77,9 @@ game_folder/
 | `move->圖片名` | 移動滑鼠到圖片位置但不點擊 |
 | `mouseClick` / `rightClick` | 滑鼠左/右鍵點擊 |
 | `mouseMove(x_y)` | 相對移動滑鼠 |
-| `scrollUp` / `scrollDown` | 滾輪滾動 |
+| `scrollUp` / `scrollDown` | 滾輪滾動（預設 500）|
+| `scrollUp(n)` / `scrollDown(n)` | 指定捲動量，例如 `scrollDown(100)` |
+| `drag(x_y)` / `drag(x_y_秒)` | 從目前位置按住左鍵拖到相對座標（預設 0.5 秒）|
 | `press->按鍵` | 按下單一鍵盤按鍵 |
 | `"文字"` | 貼上文字（透過剪貼簿） |
 | `@圖片->驗證碼圖片#位數` | 辨識驗證碼並輸入 |
@@ -85,9 +87,13 @@ game_folder/
 | `.lnk` / `.exe` / 其他關鍵字 | 啟動捷徑或應用程式 |
 | `focus->視窗標題` / `close->視窗標題` / `minimize->視窗標題` | 視窗控制 |
 | `match->圖片名稱` | 視窗校正，持續輸出比對信心分數 |
+| `screenshot` | 全螢幕截圖，存到根目錄 `_screenshot\` |
+| `screenshot(x_y_w_h)` / `screenshot(x_y_w_h_縮放)` | 局部截圖（螢幕座標），可縮小，例如 `screenshot(540_60_1340_780_0.5)` |
+| `screenshot(圖片_dx_dy_w_h_縮放)` | 以定位圖中心為基準的局部截圖，左上角在 (dx,dy)；找不到定位圖時略過 |
 | `callCommand:指令名` | 呼叫另一指令 |
 | `nextCommand` | 跳到下一步驟（略過當前） |
 | `exitCommand` | 結束整個指令 |
+| `AI(說明)` / `AI` | 截圖後停下，交給 AI 代理（Claude）處理；說明寫這裡要做什麼。處理完送 `{"command":"aiContinue"}`（`ai_run.py --continue`）從下一步接續。說明裡不能有半形逗號 |
 | `:模組名$arg1$arg2` | 呼叫模組並帶入參數（`$1`、`$2` 於模組內取用） |
 
 ### 條件分支
@@ -118,6 +124,12 @@ client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 client.connect(("127.0.0.1", 5200))
 client.sendall(json.dumps(data).encode("utf-8"))
 client.close()
+```
+
+結束所有執行中或暫停中的指令（Core 繼續執行）：
+
+```python
+data = {"command": "stopCommand"}
 ```
 
 關閉 Core（乾淨結束多執行緒）：

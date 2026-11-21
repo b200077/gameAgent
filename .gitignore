@@ -8,6 +8,7 @@ AIprompt.txt
 .tmp.driveupload/
 .agents/
 .env
+_core_messages.log
 
 # Local build helpers and superseded project files
 agent_core_0711.py
@@ -20,3 +21,7 @@ gameIconWeb.txt
 # This workspace also holds personal game scripts.  Publish only the
 # root-level application source, build scripts, and documentation.
 /*/
+
+gemini_usage.log
+
+.claude/settings.local.json

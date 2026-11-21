@@ -8,6 +8,7 @@ import os
 import re
 import sys
 import tempfile
+import threading
 import webbrowser
 from datetime import datetime
 from urllib.parse import quote
@@ -20,7 +21,7 @@ from PyQt5.QtWidgets import (
     QLabel, QLineEdit, QPushButton, QTextEdit,
     QRadioButton, QButtonGroup,
 )
-from PyQt5.QtCore import Qt, QRect, pyqtSignal
+from PyQt5.QtCore import Qt, QRect, QObject, QTimer, pyqtSignal
 from PyQt5.QtGui import QPainter, QPen, QImage, QPixmap, QColor
 
 from PIL import Image
@@ -28,9 +29,17 @@ import pytesseract
 
 import winocr
 
+# Gemini：放在模組頂層，PyInstaller 才一定會打包進去；失敗時保留錯誤訊息給按鈕顯示
+try:
+    from gemini_module import explain_image
+    GEMINI_IMPORT_ERROR = None
+except Exception as e:
+    explain_image = None
+    GEMINI_IMPORT_ERROR = e
+
 OCR_LANGS = ["zh-Hant", "en", "ja"]
 
-def ocr_recognize(pil_image, langs=None):
+def winocr_recognize(pil_image, langs=None):
     """依序用多個語言模型辨識，回傳字數最多的結果"""
     langs = langs or OCR_LANGS
     best_text = ""
@@ -95,6 +104,54 @@ def open_ocr_screenshot(folder, callback=None):
     window.exec_()
 
 
+# ── Gemini 解釋/翻譯 相關 ──
+class _GeminiEmitter(QObject):
+    """背景執行緒 → 主執行緒 傳遞 Gemini 結果用"""
+    done = pyqtSignal(bool, str)
+
+
+RESULT_FONT_SIZE = 14  # 翻譯視窗字體大小(pt)
+
+_text_windows = []  # 保留結果視窗參考，避免被回收
+
+def show_text_window(title, text, parent=None):
+    # 不設 parent + 最上層：設 parent 給截圖對話框時視窗會看不到
+    # 截圖對話框是 exec_() 的 modal 視窗，一般視窗會被它擋住無法點擊，
+    # 所以結果視窗本身也設成 ApplicationModal：最新開的 modal 視窗才能接收滑鼠
+    win = QDialog()
+    win.setWindowTitle(title)
+    win.resize(600, 650)
+    win.setAttribute(Qt.WA_DeleteOnClose)
+    win.setWindowFlags(win.windowFlags() | Qt.WindowStaysOnTopHint)
+    win.setWindowModality(Qt.ApplicationModal)
+
+    box = QTextEdit()
+    box.setReadOnly(True)
+    font = box.font()
+    font.setPointSize(RESULT_FONT_SIZE)
+    box.setFont(font)
+    box.setPlainText(text)
+
+    copy_btn = QPushButton("複製")
+    copy_btn.clicked.connect(lambda: QApplication.clipboard().setText(text))
+    close_btn = QPushButton("關閉")
+    close_btn.clicked.connect(win.close)
+
+    btns = QHBoxLayout()
+    btns.addWidget(copy_btn)
+    btns.addWidget(close_btn)
+
+    layout = QVBoxLayout(win)
+    layout.addWidget(box)
+    layout.addLayout(btns)
+
+    _text_windows.append(win)
+    win.destroyed.connect(lambda *_: _text_windows.remove(win) if win in _text_windows else None)
+    win.show()
+    win.raise_()
+    win.activateWindow()
+
+
 class FilenameDialog(QDialog):
     def __init__(self, pil_image, default_name, parent=None):
         super().__init__(parent)
@@ -115,8 +172,13 @@ class FilenameDialog(QDialog):
         self.image_label.setAlignment(Qt.AlignCenter)
         self.image_label.setPixmap(pixmap)
 
+        # 用 Google 以圖搜圖讓搜尋引擎的 AI 看圖（目前使用中，不耗 API 額度）
         search_btn = QPushButton("Google搜尋")
         search_btn.clicked.connect(self.search_image)
+
+        # 把圖片傳給 Gemini，取得說明、原文解釋與中文翻譯（與 Google搜尋 並存，會消耗 API 額度）
+        self.gemini_btn = QPushButton("Gemini 解釋/翻譯")
+        self.gemini_btn.clicked.connect(self.explain_with_gemini)
 
         # 假設 self.name_input 是放置 OCR 文字的 QLineEdit / QTextEdit
         # 新增「Google搜尋(文字)」按鈕
@@ -146,6 +208,7 @@ class FilenameDialog(QDialog):
         layout = QVBoxLayout()
         layout.addWidget(self.image_label)
         layout.addWidget(search_btn)
+        layout.addWidget(self.gemini_btn)
         layout.addWidget(btn_search_text)
         layout.addWidget(restyle_btn)
         layout.addLayout(name_layout)
@@ -159,6 +222,7 @@ class FilenameDialog(QDialog):
             self.result_name = name
             self.accept()
 
+    # Google 以圖搜圖（目前使用中）
     def search_image(self):
         try:
             # 🔹 建立暫存圖片
@@ -178,6 +242,43 @@ class FilenameDialog(QDialog):
 
         except Exception as e:
             print("搜尋圖片失敗:", e)
+
+    def explain_with_gemini(self):
+        """背景執行緒呼叫 Gemini，避免 UI 卡住；結果另開視窗顯示"""
+        self.gemini_btn.setEnabled(False)
+        self.gemini_btn.setText("Gemini 分析中... 0 秒")
+
+        # 每秒更新按鈕上的等待秒數，讓使用者知道還在等回應
+        self._gemini_elapsed = 0
+        self._gemini_timer = QTimer(self)
+        def tick():
+            self._gemini_elapsed += 1
+            self.gemini_btn.setText(f"Gemini 分析中... {self._gemini_elapsed} 秒")
+        self._gemini_timer.timeout.connect(tick)
+        self._gemini_timer.start(1000)
+
+        emitter = _GeminiEmitter()
+        emitter.done.connect(self._on_gemini_done)
+        image = self.pil_image.copy()
+
+        def worker():
+            try:
+                if explain_image is None:
+                    raise RuntimeError(f"無法載入 gemini_module：{GEMINI_IMPORT_ERROR}")
+                text, usage = explain_image(image)
+                body = text or "(Gemini 沒有回傳內容)"
+                emitter.done.emit(True, f"{body}\n\n────────\n{usage}")
+            except Exception as e:
+                emitter.done.emit(False, f"Gemini 呼叫失敗：{e}")
+
+        self._gemini_emitter = emitter  # 保留參考，避免被回收
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_gemini_done(self, ok, text):
+        self._gemini_timer.stop()
+        self.gemini_btn.setEnabled(True)
+        self.gemini_btn.setText("Gemini 解釋/翻譯")
+        show_text_window("Gemini 解釋/翻譯" if ok else "Gemini 錯誤", text)
 
     def on_google_search_text(self):
         # 取得目前文字框內的 OCR 文字
@@ -312,7 +413,8 @@ class ScreenShotWidget(QDialog):
 
         #text = pytesseract.image_to_string(img, lang='jpn+chi_tra+eng').strip()
         ocr_img = upscale_if_small(img)
-        text = ocr_recognize(ocr_img)
+        text = winocr_recognize(ocr_img)
+        text = re.sub(r'\s+', '', text)
         safe_name = self.sanitize_filename(text)
 
         # 🔹 直接傳 img 物件給 Dialog

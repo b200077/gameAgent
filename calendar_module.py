@@ -73,12 +73,12 @@ def resolve_wildcard(key, d):
         return False
     day_token = key[2:]  # 取 /後面的部分
     try:
-        _, month, day = map(int, d.split("/"))
+        y, month, day = map(int, d.split("/"))
         day_num = int(day_token)
         if day_num > 0:
             return day == day_num
         else:  # 負數，倒數
-            last_day = calendar.monthrange(datetime.now().year, month)[1]
+            last_day = calendar.monthrange(y, month)[1]
             return day == last_day + day_num + 1
     except Exception:
         return False
@@ -149,7 +149,9 @@ def parse_dates(input_str):
 
     for part in input_str.split(","):
         token = part.strip()
-        if "~" in token:
+        if token.startswith("*/"):          # ← 新增：每月固定日，原樣當 key
+            result.append(token)
+        elif "~" in token:
             start, end = token.split("~")
             start_date = parse_one(start.strip())
             end_date = parse_one(end.strip())
@@ -232,12 +234,23 @@ class MainWindow(QWidget):
         add_btn.clicked.connect(self.add_task)
         del_btn.clicked.connect(self.delete_task)
 
+        label_layout = QHBoxLayout()
+        self.msg_label = QLabel("")
+        label_layout.addWidget(self.msg_label)
+
         btn_layout.addWidget(add_btn)
         btn_layout.addWidget(del_btn)
+        
+       
+     
 
         layout.addLayout(date_layout)
         layout.addLayout(task_layout)
         layout.addLayout(btn_layout)
+        layout.addLayout(label_layout)
+
+
+
 
         self.setLayout(layout)
 
@@ -256,6 +269,28 @@ class MainWindow(QWidget):
     # -----------------------
     # 新增
     # -----------------------
+    # def add_task(self):
+    #     date_str = self.date_edit.text().strip()
+    #     task = self.task_edit.text().strip()
+
+    #     if not date_str or not task:
+    #         return
+
+    #     dates = parse_dates(date_str)
+
+    #     for d in dates:
+    #         if d not in self.data:
+    #             self.data[d] = []
+    #         self.data[d].append(task)
+
+    #     save_data(self.data)
+
+    #     msg = f'已在 "{date_str}" 加入 "{task}"'
+    #     self.msg_label.setText(msg)
+    #     print(msg)
+
+    #     self.completer.model().setStringList(get_all_tasks(self.data))
+    #     self.task_edit.clear()
     def add_task(self):
         date_str = self.date_edit.text().strip()
         task = self.task_edit.text().strip()
@@ -264,16 +299,26 @@ class MainWindow(QWidget):
             return
 
         dates = parse_dates(date_str)
+        added, skipped = [], []
 
         for d in dates:
-            if d not in self.data:
-                self.data[d] = []
-            self.data[d].append(task)
+            day_tasks = self.data.setdefault(d, [])
+            if task in day_tasks:
+                skipped.append(d)
+            else:
+                day_tasks.append(task)
+                added.append(d)
 
-        save_data(self.data)
+        if added:
+            save_data(self.data)
+            self.completer.model().setStringList(get_all_tasks(self.data))
+            self.task_edit.clear()
 
-        self.completer.model().setStringList(get_all_tasks(self.data))
-        self.task_edit.clear()
+        msg = f'已在 "{date_str}" 加入 "{task}"'
+        if skipped:
+            msg += f'，{date_str} 已存在而略過'
+        self.msg_label.setText(msg)
+        print(msg)
 
     # -----------------------
     # 刪除（關鍵字）
@@ -295,6 +340,10 @@ class MainWindow(QWidget):
 
             if not self.data[d]:
                 del self.data[d]
+                
+        msg = f'已從 "{date_str}" 刪除包含 "{keyword}" 的行程'
+        self.msg_label.setText(msg)
+        print(msg)
 
         save_data(self.data)
         self.task_edit.clear()
@@ -308,7 +357,7 @@ def open_calendar_window():
     if app is None:
         app = QApplication(sys.argv)
     window = MainWindow()
-    window.resize(400, 150)
+    window.resize(400, 120)
     window.show()
     app.exec_()
 
