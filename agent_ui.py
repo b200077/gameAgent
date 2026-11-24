@@ -118,11 +118,13 @@ def extract_images_from_step(step):
         return []
     if re.match(r'"(.+)"', s):
         return []
-    if re.match(r'press->(\w+)', s):
+    if re.match(r'press->([\w+]+)$', s):
         return []
     if low in ("mouseclick", "rightclick"):
         return []
     if re.match(r'mouseMove\((\-?\d+)\_(\-?\d+)\)', s):
+        return []
+    if re.match(r'mouseMoveTo\((\d+)\_(\d+)\)$', s):
         return []
     if "@->" in s:
         m = re.match(r'(.+?)@->(.+)#(\d)', s)

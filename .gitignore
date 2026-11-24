@@ -25,3 +25,4 @@ gameIconWeb.txt
 gemini_usage.log
 
 .claude/settings.local.json
+!/.github/

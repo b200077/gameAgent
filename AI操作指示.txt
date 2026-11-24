@@ -1,254 +1,103 @@
-我只講遊戲名稱（例如「レゾナンス リリウムX」）時，就是要你刷該遊戲的每日，直接照本指南開始刷，不用再問。
-開始刷之前，第一件事是先幫這個聊天開啟 Remote Control（見第一節第 8 點），再做其他步驟。
+gameAgent AI 操作指南（2026-11-24 精簡版，內容對照 agent_core.py）
+我只講遊戲名稱時，就是要你刷該遊戲的每日，直接照本指南開始，不用再問。
 
-gameAgent AI 操作指南
-給 AI 使用：透過 gameAgent 操作遊戲、完成每日，以及撰寫或修改 commands.txt。
-更新日期：2026-11-18（內容已對照目前的 agent_core.py）
+━━ 一、流程 ━━
+1. 先開 Remote Control（set_remote_control self），要在「開啟」遊戲之前開。
+   沒回傳 on（被拒、要核准、auto mode 無法審核）就停下，請我手動開好再繼續。
+2. 讀 <遊戲資料夾>\AI備註.txt（若有），只讀這款遊戲的。
+3. 用「開啟」開遊戲（會把遊戲帶到最上層），再跑 daily 等指令。
+4. 跑完回報，問我要不要關遊戲，並列出沒跑的選用指令。
+5. 我說「刷完」時：
+   (1) 關遊戲（見下「關遊戲」），然後清理（見下）。
+   (2) 根目錄執行 PYTHONIOENCODING=utf-8 python usage_report.py --summary
+   (3) 用文字寫分析（不要只貼輸出）：總花費與呼叫次數和同遊戲前幾次比較、花最多的段落與原因、
+       上下文暴增的步驟下次能否避開、截圖佔比（有無全螢幕或未縮放）、下次怎麼省。
+       表格在 _usage\sessions.csv、turns.csv。
+   (4) 整理該遊戲的 AI備註.txt：把這次的發現併進對應段落（已寫進腳本的只留結論，
+       舊的同類紀錄合併或刪掉，未驗證的標明），不要只在最後追加日期段落，讓檔案保持精簡。
+關遊戲：一般遊戲用 close-><視窗標題>。網頁遊戲（Chrome 分頁）不要用 close->，它會關掉整個 Chrome
+  視窗連同其他分頁。改關分頁：截分頁列，找出遊戲分頁的 ×，用遊戲資料夾的 tab.png（分頁圖示加標題開頭，
+  沒有就從截圖裁）點分頁讓它成為目前分頁，再 press->ctrl+w：tab,wait0.5,press->ctrl+w（オトギフロンティア 11-24 跑通，可寫成該遊戲的 關閉 指令）。
+  關完再截分頁列確認只少了遊戲分頁。
+清理：python clean_run.py --since "YYYY-MM-DD HH:MM" --until "..."（移到資源回收筒，只動該時段的
+  _screenshot\*.png 與 _core_messages.log；其他工作可能也在截圖時先加 --dry-run；別人還在用 log 時加 --keep-log）。
+  保留 _ai_command_log.txt 和寫回腳本的按鈕圖片。
 
-任務：幫我刷 <遊戲名稱> 完成每日任務
+━━ 二、基本規則 ━━
+- 只用 gameAgent 操作電腦。難以控制的情況先問我。
+- 用圖片／文字比對點擊，不點座標。付費頁面只比對明確的免費按鈕。
+- 不買付費商品、不花付費貨幣，需要時先問。
+- ai_run.py 會自動記錄指令到 <遊戲資料夾>\_ai_command_log.txt；其他方式送的（如 closeCore）
+  自己記：時間<Tab>command/step/key<Tab>內容。
+- 遊戲有更新（登入前下載資料）：下載完停住告訴我，讓我自己看公告。
+- 維護或畫面異常：關遊戲（見一、流程「關遊戲」）並回報。「開啟」不偵測維護，會一直等。
 
+━━ 三、位置 ━━
+根目錄 F:\應用程式\遊戲腳本\；遊戲資料夾 根目錄\<遊戲名稱>\（commands.txt、按鈕 png、AI備註.txt）
+截圖存在 根目錄\_screenshot\；core 訊息 根目錄\_core_messages.log；語法細節 README.md
+cv2 用 F:\build\build_env\Scripts\python.exe
+core 監聽 127.0.0.1:5200。連不上先問我，同意後：
+  Start-Process -FilePath 'F:\應用程式\遊戲腳本\agent_core.exe' -Verb RunAs（我按 UAC）
 
-━━━━━━━━━━━━━━━━━━
-一、基本規則
-━━━━━━━━━━━━━━━━━━
-1. 只使用 gameAgent 控制電腦，不要用其他方式點擊或操作視窗。
-2. 遇到難以控制的情況，先取得我同意再嘗試解決。
-3. 指令用文字圖片比對點擊，不要點座標。付費頁面只比對明確的免費按鈕圖片。
-4. 不得購買任何付費商品，也不得消耗付費貨幣；需要時先問我。
-5. 跑通的做法要寫回腳本（見第七節）。
-6. 開始前先讀該遊戲資料夾的 AI備註.txt（若有），不需要讀其他遊戲的備註。
-7. 每次送出的指令都要記錄到 <遊戲資料夾>\_ai_command_log.txt，用於改進腳本。
-   ai_run.py 送出的會自動記錄，其他方式送出的（例如 closeCore）要自己記錄，格式：
-   時間<Tab>command 或 step 或 key<Tab>內容
-8. 開始刷之前，先把這個聊天開啟 remote control（讓使用者可以用手機看進度），
-   而且要在「開啟」遊戲之前先開：開啟時 Claude 視窗會跳到前面，
-   之後執行「開啟」會把遊戲視窗帶到最上層，不需要請使用者手動切換。
-   開啟失敗時（被拒、要求核准、回傳不是 on，例如 auto mode 無法審核），先停下來，
-   請使用者手動按 Remote Control 按鈕（或核准），等使用者回覆已開好之後才繼續，
-   不要跳過直接開遊戲。
-9. 工作結束後清理自己產生的檔案，移到資源回收筒，不要永久刪除：
-   根目錄\_core_messages.log，以及這次工作期間在 _screenshot 產生的截圖（看檔名的日期時間）。
-   要保留 _ai_command_log.txt，以及寫回腳本用的按鈕圖片。
-   PowerShell 範例：
-     Add-Type -AssemblyName Microsoft.VisualBasic
-     [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile('<完整路徑>', 'OnlyErrorDialogs', 'SendToRecycleBin')
+━━ 四、送指令（一律背景執行，等待中不截圖） ━━
+python ai_run.py "<遊戲資料夾>" --command daily [--start-index n]
+python ai_run.py "<遊戲資料夾>" --step "步驟1,步驟2"
+python ai_run.py "<遊戲資料夾>" --stop        結束執行中／暫停中的指令，core 不關
+python ai_run.py "<遊戲資料夾>" --continue    AI() 接手後接續
+--start-index n 從第 n 步開始（0 起算，:模組 算一步），接續用這個，不要手動重組步驟。
+--silence 秒（預設 180，長戰鬥調大）；--max-run 秒（預設 600，整合指令建議 1200）。
+RESULT：done 完成｜ai_handoff 走到 AI()｜timeout 圖片等 8 秒沒找到，core 已暫停｜paused｜stopped｜
+  error 有 ❌（如缺圖）｜needs_input｜silence 長時間無訊息（常是 waitImg）｜max_run｜core_unreachable
 
+━━ 五、看畫面 ━━
+截圖：--step "screenshot(...)" --silence 15 --max-run 20，再讀 _screenshot 最新檔。暫停中也能截。
+- 每次工作只有第一張截全螢幕（可縮 0.5），找出遊戲視窗範圍，之後都用
+  screenshot(x_y_w_h_縮放) 只截遊戲；視窗位置每次可能不同，不沿用舊座標，內容不對時再截全螢幕。
+- 固定區域用定位圖：screenshot(圖片_dx_dy_w_h_縮放)；跑通後記到 AI備註.txt。
+- 小字或數字縮放不低於 0.7。不用自己寫 cv2 裁圖。
+- 圖片比對要遊戲在最上層且沒被邊緣擋住（瀏覽器遊戲注意書籤列和工作列）。
+- 遊戲被 Claude 擋住：minimize->claude.exe。focus-> 在 core 位於背景時常被 Windows 拒絕，
+  會無聲中斷變成 silence；切不過去才叫我，用 wait8,screenshot 等我切換。
+  focus-> 依標題找，可能切到同名的 gameAgent UI 視窗，改用 exe 名稱（例 focus->ドットアビスX.exe）。
+- login bonus：多半點畫面任一處（mouseClick）或右上跳過就過；圖片比對沒找到改 mouseClick。
 
-━━━━━━━━━━━━━━━━━━
-二、檔案位置
-━━━━━━━━━━━━━━━━━━
-根目錄                F:\應用程式\遊戲腳本\
-遊戲資料夾            根目錄\<遊戲名稱>\，內含 commands.txt、按鈕圖片 png，以及 AI備註.txt（該遊戲的特例，不一定有）
-常見指令              「開啟」「daily」「整合 / alignment」
-截圖                  根目錄\_screenshot\（不是遊戲資料夾）
-core 訊息記錄         根目錄\_core_messages.log（core 啟動時清空，不記錄倒數計時）
-語法與架構            根目錄\README.md
-裁圖或比對用的 cv2    F:\build\build_env\Scripts\python.exe
+━━ 六、暫停與異常 ━━
+- 模擬的 ESC 無效（pyautogui、press->esc 都不行），一律用 --stop；沒回應才 closeCore（之後要重開按 UAC）。
+- 暫停中的舊指令還活著：實體空白鍵會讓它恢復，和新指令一起亂點。core 監聽全域鍵盤，
+  聊天框打字（含輸入法空白鍵）也算。所以：送會點擊的新指令前先 --stop；執行中提醒我別按空白／Tab、別動滑鼠；
+  發現多條指令同時跑就立刻 --stop 並回報。
+- AI() 接手（ai_handoff）：「🤖 AI接手:」後是要做的事，「📸 已截圖」是當下畫面。用 --step 完成後 --continue。
+  --step 不影響接續，--stop 會清掉接續點。每次都能用固定步驟處理時，建議把 AI(...) 換成那些步驟。
+- waitImg 變成 silence：先截圖，常是在等我自己選或長戰鬥，不要 --stop 也不要替我選，告訴我在等什麼。
 
+━━ 七、卡住時與寫回腳本 ━━
+1. 先截圖判斷原因，不要猜、不要先按畫面上的按鈕。沒看過的畫面常是前一步沒點到，應回頭補做。
+2. 缺按鈕就從截圖裁 png 放進遊戲資料夾（座標以 1920x1080 為準）。路徑含中日文時 cv2.imwrite/imread
+   會無聲失敗，改用 cv2.imencode('.png',img)[1].tofile(路徑) / cv2.imdecode(np.fromfile(路徑,np.uint8),cv2.IMREAD_COLOR)，
+   存完 ls 確認。
+3. 捲動：move->固定定位圖,mouseMove(x_y),scrollDown*n；太多用 scrollDown(100) 微調；滾輪無效用 drag(x_y)。
+   定位圖不可含倒數等變動內容。捲動距離依遊戲而異，先試一次再計算。
+4. 「執行了但沒點到」多半是冷卻：前面加 wait0.1 或後面補一次 按鈕?。會開視窗或扣資源的按鈕不要補點，改加等待。
+5. 臨時測試的點擊都加 ? 再接 screenshot（沒加 ? 找不到會暫停，要先 --stop）。
+跑通後：寫回 commands.txt 對應指令並保留新圖；先試現有圖（門檻 0.8）；只改相關步驟（commands.txt 不在 git）；
+沒跑通或推測的不寫，改成建議；告訴我改了什麼、哪些未驗證；單一遊戲的發現寫進該遊戲 AI備註.txt。
 
-━━━━━━━━━━━━━━━━━━
-三、啟動 core
-━━━━━━━━━━━━━━━━━━
-core 監聽 127.0.0.1:5200。連不上時先問我，我同意後可以用下面的方式開啟，由我按 UAC：
-  Start-Process -FilePath 'F:\應用程式\遊戲腳本\agent_core.exe' -Verb RunAs
-不需要開 UI，訊息會寫進 _core_messages.log。
+━━ 八、commands.txt 語法 ━━
+格式 指令名:{步驟1,步驟2}；圖片步驟寫檔名（不含 .png）；名稱以 _ 開頭不顯示但可呼叫。
+只能用下列語法，不發明新指令；做不到時回答「❌ 無法產生腳本：缺少對應指令」；只要求產生腳本時只輸出腳本。
 
-
-━━━━━━━━━━━━━━━━━━
-四、送指令與等待結果
-━━━━━━━━━━━━━━━━━━
-一律用 ai_run.py，並在背景執行。等待期間不要定時截圖，它結束時才看畫面，以節省用量。
-
-  python ai_run.py "<遊戲資料夾>" --command daily
-  python ai_run.py "<遊戲資料夾>" --command alignment --start-index 9
-  python ai_run.py "<遊戲資料夾>" --step "步驟1,步驟2"
-
---start-index n   從指令的第 n 步開始。從 0 開始數，一個 :模組 算一步。
-                  只用於 --command。要接續已寫好的指令時用這個，不要手動組步驟。
---silence 秒      超過此秒數沒有新訊息就結束，預設 180。長戰鬥可以調大。
---max-run 秒      整體上限，預設 600。整合指令建議 1200。
-
-結束時印出 RESULT，後面附最近的 core 訊息：
-  done          完成
-  ai_handoff    腳本走到 AI(說明) 步驟，core 已截圖並停下，見第六節「AI() 接手」
-  timeout       圖片等待達 8 秒，core 已自動暫停，畫面停在卡住的地方
-  paused        腳本暫停
-  stopped       被 ESC 中斷
-  error         出現 ❌，例如找不到圖片檔
-  needs_input   腳本要求輸入參數
-  silence       長時間沒有新訊息，可能卡在 waitImg，或指令已無聲中斷
-  max_run       超過整體上限，可能 ↑ 重試不停
-  core_unreachable  連不上 core
-
-底層格式（ai_run.py 已處理，通常不用自己送）：
-  {"folder": "<完整路徑>", "command": "指令名", "start_index": 0}
-  {"folder": "<完整路徑>", "step": "步驟1,步驟2"}
-  {"command": "stopCommand"}    結束所有指令，core 繼續執行
-  {"command": "closeCore"}      關閉 core
-
-
-━━━━━━━━━━━━━━━━━━
-五、看畫面
-━━━━━━━━━━━━━━━━━━
-截圖：python ai_run.py "<遊戲資料夾>" --step screenshot --silence 15 --max-run 20
-再讀 _screenshot 裡最新的檔案。暫停中也可以截圖。
-每次工作只有第一張用全螢幕截圖：從這張找出遊戲視窗的範圍（左上角 x、y 和寬高），記下來，
-這次工作之後的截圖都用 screenshot(x_y_w_h_縮放) 只截遊戲視窗。
-視窗位置每次開啟都可能不同，不要沿用上次工作的座標；看到視窗被移動或截圖內容不對時，再截一次全螢幕重新確認。
-常看的固定區域（清單、獎勵視窗等）改用定位圖為基準，視窗移動也不受影響；
-跑通後把這個寫法記到該遊戲的 AI備註.txt（例如：營業清單 screenshot(營業title_dx_dy_w_h_0.7)），下次直接用。
-只需要看一部分時，用局部截圖並縮小（例如 screenshot(540_60_1340_780_0.5)，或以定位圖為基準），
-不用自己寫 cv2 裁圖，可以大幅減少用量。數字或小字要看清楚時縮放不要低於 0.7。
-
-遊戲必須在最上層，圖片才比對得到。
-「開啟」會把遊戲視窗帶到最上層，不用特地請我切換。
-只有截圖沒看到遊戲畫面、而且 focus-> 也切不過去時才叫我：
-focus-> 在 core 位於背景時常被 Windows 拒絕，工作列圖示只會閃爍，指令也會無聲中斷，
-最後變成 silence。這時請我切過去，用 wait8,screenshot 等我切換並確認。
-focus-> 依標題關鍵字找視窗，gameAgent UI 會開一個和遊戲資料夾同名的視窗，
-可能切到 UI 而不是遊戲（例如 focus->ドットアビスX 切到 UI 的「ドットアビスX」視窗）。
-改用 exe 名稱：focus->ドットアビスX.exe。切換後先截圖確認是遊戲畫面。
-
-
-━━━━━━━━━━━━━━━━━━
-六、暫停、停止與異常
-━━━━━━━━━━━━━━━━━━
-停止所有執行中或暫停中的指令，core 不會關閉：
-  python ai_run.py "<遊戲資料夾>" --stop
-
-AI() 接手（RESULT: ai_handoff）：
-  1. 訊息裡「🤖 AI接手: 」後面是這一步要做的事，「📸 已截圖」是當下的畫面，直接讀那張圖。
-  2. 用臨時指令（--step）完成說明裡的事，照第七節的方式裁圖、加 ? 再截圖確認。
-  3. 完成後接續原指令，從 AI() 的下一步開始：
-       python ai_run.py "<遊戲資料夾>" --continue
-     中間用 --step 不會影響接續；--stop 會清掉接續點，之後只能用 --start-index。
-  4. 同一個畫面每次都能用固定步驟處理時，把 AI(...) 換成那些步驟寫回腳本。
-
-模擬的 ESC 無效，外部 pyautogui 和 press->esc 都不會觸發 core 的 ESC，不要使用。
---stop 沒有回應時才用 closeCore（會結束整個 core，之後要重開並按 UAC）。
-
-暫停中的舊指令還活著。實體空白鍵會讓它從上一步恢復，和新指令同時操作，造成亂點。
-core 監聽全域鍵盤，在聊天框打字（包含輸入法選字的空白鍵）也算。因此：
-  1. 指令暫停時，送會點擊的新指令前，要先用 --stop 結束舊指令。截圖不受影響。
-  2. 指令執行或暫停期間，提醒我不要按空白鍵或 Tab，也不要動滑鼠。
-  3. 發現多條指令同時在跑時，立刻 --stop，再回報給我。
-  4. 接續時用 --start-index，不要從頭重跑。
-
-遊戲維護中或畫面異常：用臨時指令 close-><視窗標題> 關閉遊戲，回報給我。
-「開啟」沒有偵測維護畫面，遇到維護會一直等待。
-
-登入時的 login bonus 畫面：通常點擊畫面任一處，或按右上的跳過，就能進入下一步。
-遊戲有更新時（例如登入前出現資料下載）：下載完成後不要點登入獎勵和公告，
-停在該畫面並告訴我，等我自己看過新資訊、確認後再繼續。
-
-
-━━━━━━━━━━━━━━━━━━
-七、卡住時的處理與寫回腳本
-━━━━━━━━━━━━━━━━━━
-處理步驟：
-1. 截圖判斷原因。不要猜，也不要先按畫面上看到的按鈕。
-   沒看過的畫面，常常是前面的步驟沒點到，應該回頭補做，不是按畫面上的下一步。
-2. 沒有適當指令時，從截圖裁出需要的按鈕或文字，存成 png 放到遊戲資料夾，
-   再用臨時指令操作。座標以 1920x1080 截圖為準。
-   用 cv2 存圖時，路徑有中文或日文（例如遊戲資料夾名稱）會存檔失敗：
-   cv2.imwrite / cv2.imread 在 Windows 不支援非 ASCII 路徑，失敗時不會報錯，
-   只回傳 False（imread 回傳 None），檔案不會產生，之後指令會出現「❌ 找不到檔案」。
-   改用：
-     cv2.imencode('.png', img)[1].tofile(路徑)                         存檔
-     cv2.imdecode(np.fromfile(路徑, np.uint8), cv2.IMREAD_COLOR)       讀檔
-   存完用 ls 確認檔案真的存在，再送指令。
-3. 需要捲動時：move-><固定的定位圖>,mouseMove(x_y),scrollDown*n
-   一格 500 太多時改用 scrollDown(100) 微調；滾輪無效的清單或捲軸改用 drag(x_y)。
-   定位圖不可包含倒數計時等會變動的內容。捲動距離依遊戲而異，先試一次再計算。
-4. 按鍵還沒冷卻時會出現「執行了但沒點到」：在前面加 wait0.1，或在後面補一次 按鈕?。
-   會打開視窗的按鈕不要補點，第二下可能把視窗關掉，改在前面加等待。
-   會扣資源的按鈕（例如抽卡）也不要補點。
-5. 臨時測試的點擊步驟都加 ?，再接 screenshot。沒加 ? 時找不到圖會暫停，要先 --stop 才能繼續。
-
-跑通之後一定要更新腳本：
-1. 把實際跑通的步驟寫回 commands.txt 的對應指令，把用到的新圖片留在遊戲資料夾。
-2. 新增前先比對現有圖片，現有圖片比對得到就沿用（信心門檻 0.8）。
-3. 只改相關的步驟，不動其他指令。commands.txt 不在 git 裡，改錯無法還原。
-4. 沒跑通的、只是推測的，不要寫進腳本，改成建議告訴我。
-5. 修改後告訴我改了什麼，以及哪些還沒實際驗證（例如今天領過無法重測）。
-6. 只適用單一遊戲的發現寫進該遊戲的 AI備註.txt，不要寫進這份通用文件。
-
-
-━━━━━━━━━━━━━━━━━━
-八、commands.txt 語法
-━━━━━━━━━━━━━━━━━━
-格式：指令名:{步驟1,步驟2,步驟3}
-圖片步驟直接寫檔名（不含 .png）。步驟由左到右執行。
-指令名第一字元為 "_" 時不顯示，但可以被使用。
-
-撰寫腳本的規則：
-1. 只能使用下面列出的指令與語法，不得發明新指令、新參數、新符號。
-2. 需求無法用現有指令完成時，回答：❌ 無法產生腳本：缺少對應指令
-3. 只要求產生腳本時，輸出腳本內容即可，不要解說。
-
-圖片修飾符
-  ?              找不到時約 0.6 秒後跳過
-  ↑              找不到時約 0.4 秒後重試上一步。上一步要能重複成功，否則會卡住或無限重試
-  ✓              點擊後確認圖片消失才算完成
-  (無修飾)       等 8 秒，找不到就暫停，適合必要步驟
-  #n             同畫面多個相符時點第 n 個，負數代表倒數
-  %scale         指定圖片縮放比例
-  @文字          OCR 判斷圖片含指定文字，支援 > < >= <= == != 數值比較
-  a|b            同時等待多張圖片，任一出現就點擊
-  Text(文字)     用 OCR 在畫面上找文字
-
-範例：skip3?,ok↑     持續按 skip3，直到 ok 出現
-
-等待
-  wait1 / wait0.5        等待秒數
-  wait14:30              等待到指定時間
-  waitImg->圖片          無限等待圖片出現，不會超時，只等待不點擊
-  waitPress->按鍵        等待鍵盤按鍵
-  waitClick              等待滑鼠左鍵
-
-滑鼠與鍵盤
-  move->圖片             移動到圖片位置，不點擊
-  mouseMove(x_y)         相對移動，可為負數
-  mouseClick / rightClick    點擊
-  scrollUp / scrollDown      滾輪，預設捲動量 500
-  scrollUp(n) / scrollDown(n)    指定捲動量，例如 scrollDown(100)，用於微調
-  drag(x_y) / drag(x_y_秒)   從目前位置按住左鍵拖到相對座標，預設 0.5 秒，可為負數
-                         例：move->定位圖,drag(0_-300)  往上拖 300px
-  press->按鍵            按一次
-  "文字"                 用剪貼簿貼上文字
-  @圖片->驗證碼圖片#位數     辨識並輸入驗證碼
-
-視窗與開啟
-  focus->標題 / close->標題 / minimize->標題    依標題關鍵字，也可以寫 xxx.exe
-  http(s)://網址         開啟網頁
-  .lnk / .exe / dmmgameplayer://... / 資料夾路徑    開啟程式
-  screenshot             截圖
-  screenshot(x_y_w_h_縮放)       局部截圖，縮放可省略，例：screenshot(540_60_1340_780_0.5)
-  screenshot(圖片_dx_dy_w_h_縮放) 以定位圖中心為基準截一塊，左上角在 (dx,dy)；找不到定位圖時略過
-  match->圖片            持續印出比對分數，用來校正
-  obsStart / obsStop     OBS 錄影
-
-流程
-  *數字                  重複，例如 mouseClick*50
-  :模組名                展開另一個指令
-  :模組名$參數1$參數2    帶參數，模組內用 $1 $2
-  callCommand:指令名     呼叫另一個指令，可用於遞迴迴圈
-  nextCommand            略過下一步
-  previousCommand        回到上一步
-  exitCommand            結束指令
-  AI(說明) / AI          交給你處理：core 截圖、印出說明後停下（不是暫停，空白鍵不會恢復）
-                         說明寫這一步要做什麼，例如 AI(找到今天的活動關卡並進入)
-                         說明不能有半形逗號（會被當成分隔步驟），要用「，」或「、」
-                         用在畫面每次不同、圖片比對寫不出來的地方
-
-條件，開頭加 ! 代表相反
-  week-Sun->步驟         星期 Mon Tue Wed Thu Fri Sat Sun
-  date-15->步驟          每月 15 號
-  img-圖片->步驟         畫面上有圖片才執行
-  img-圖片@>50->步驟     加上 OCR 判斷
-
-模組範例
-  train:{train,getAll,ok,confirm,wait2.5,back}
-  daily:{quest?,trainQuest,evolve,skip3?,ok↑,back}
-  alignment:{:train,:daily}
-
+圖片修飾：? 找不到約 0.6 秒跳過｜↑ 找不到約 0.4 秒重試上一步（上一步要能重複成功）｜✓ 點擊後確認消失｜
+  無修飾 等 8 秒，找不到暫停｜#n 第 n 個相符（負數倒數）｜%scale 縮放｜@文字 OCR 判斷（支援 > < >= <= == !=）｜
+  a|b 任一出現就點｜Text(文字) OCR 找文字。例：skip3?,ok↑ 持續按 skip3 直到 ok 出現
+等待：wait1 / wait0.5｜wait14:30 等到時間｜waitImg->圖片 無限等待不點擊，不會超時｜
+  waitPress->按鍵｜waitClick
+滑鼠鍵盤：move->圖片｜mouseMove(x_y) 相對｜mouseMoveTo(x_y) 絕對｜mouseClick / rightClick｜
+  scrollUp / scrollDown（預設 500）、scrollDown(n)｜drag(x_y) / drag(x_y_秒) 從目前位置拖（預設 0.5 秒）｜
+  press->按鍵、press->ctrl+w 組合鍵｜"文字" 剪貼簿貼上｜@圖片->驗證碼圖片#位數
+視窗開啟：focus-> / close-> / minimize->標題或 xxx.exe｜http(s)://網址｜.lnk / .exe / dmmgameplayer://... / 資料夾｜
+  screenshot、screenshot(x_y_w_h_縮放)、screenshot(圖片_dx_dy_w_h_縮放)（找不到定位圖略過）｜match->圖片 印比對分數｜obsStart / obsStop
+流程：*數字 重複｜:模組名、:模組名$參數1$參數2（模組內 $1 $2）｜callCommand:指令名（可遞迴）｜
+  nextCommand 略過下一步｜previousCommand｜exitCommand｜
+  AI(說明) / AI 交給你（core 截圖後停下，空白鍵不會恢復；說明不能有半形逗號，用「，」「、」）
+條件（前加 ! 相反）：week-Sun->步驟（Mon~Sun）｜date-15->步驟｜img-圖片->步驟｜img-圖片@>50->步驟
+範例：train:{train,getAll,ok,confirm,wait2.5,back}　alignment:{:train,:daily}

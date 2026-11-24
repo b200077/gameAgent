@@ -446,6 +446,10 @@ def match_ocr_value(ocr_text, required_text):
     return required_text in ocr_text  
 
 # 執行模組/指令
+def report_failsafe(folder_path, command_name=""):
+    pos = pyautogui.position()
+    update_message(f"❌ 滑鼠在螢幕角落 ({pos.x},{pos.y})，觸發 pyautogui fail-safe，{command_name}指令中斷。請把滑鼠移開角落後重新執行",folder_path)
+
 def execute_command(command_name, commands, folder_path, start_index=0, expanded_index=None):
     update_message(f"開始執行 '{command_name}'",folder_path)
     if command_name not in commands:
@@ -523,11 +527,15 @@ def execute_command(command_name, commands, folder_path, start_index=0, expanded
             
         
         # 執行當前步驟，完成後自動呼叫下一步
-        execute_one_step(
-            steps[index],
-            folder_path,
-            on_done=lambda backup_plan="Next": check(index + 1, backup_plan)
-        )
+        try:
+            execute_one_step(
+                steps[index],
+                folder_path,
+                on_done=lambda backup_plan="Next": check(index + 1, backup_plan)
+            )
+        except pyautogui.FailSafeException:
+            # 滑鼠在螢幕角落時 pyautogui 會丟例外，原本在背景執行緒裡無聲中斷
+            report_failsafe(folder_path, command_name)
 
     # 從第一步開始
     check(expanded_start,"Next")
@@ -635,9 +643,13 @@ def execute_one_step(step,folder_path,on_done=None):
     def image_click(center,backup_plan,mode="normal"):
         if center != False:
             if mode != "wait" :
-                pyautogui.moveTo(center)
-                if mode != "move" :
-                    pyautogui.click()
+                try:
+                    pyautogui.moveTo(center)
+                    if mode != "move" :
+                        pyautogui.click()
+                except pyautogui.FailSafeException:
+                    report_failsafe(folder_path)
+                    return
         else:
             if backup_plan == "Ensure" : backup_plan="Next"
         if on_done : on_done(backup_plan)
@@ -702,9 +714,16 @@ def execute_one_step(step,folder_path,on_done=None):
         if on_done: on_done()
         return
         # 判斷有無按鈕需求
-    if re.match(r'press->(\w+)', step):
-        text = re.match(r'press->(\w+)', step).group(1)
-        pyautogui.press(text)   # 單次按下
+    if re.match(r'press->([\w+]+)$', step):
+        # press->esc 單鍵；press->ctrl+w 組合鍵（依序按下、反序放開）
+        keys = [k.strip().lower() for k in re.match(r'press->([\w+]+)$', step).group(1).split('+') if k.strip()]
+        bad = [k for k in keys if k not in pyautogui.KEYBOARD_KEYS]
+        if not keys or bad:
+            update_message(f"❌ press-> 不認得的按鍵: {'+'.join(bad) or step}")
+        elif len(keys) == 1:
+            pyautogui.press(keys[0])   # 單次按下
+        else:
+            pyautogui.hotkey(*keys)
         if on_done: on_done()
         return
     if step.lower() == 'mouseclick':
@@ -715,6 +734,13 @@ def execute_one_step(step,folder_path,on_done=None):
     if step.lower() == 'rightclick':
         # 按一下滑鼠右鍵
         pyautogui.rightClick()
+        if on_done: on_done()
+        return
+    # mouseMoveTo(x_y)：移動到螢幕絕對座標（以 1920x1080 全螢幕截圖為準）
+    match = re.match(r'mouseMoveTo\((\d+)\_(\d+)\)$', step)
+    if match:
+        x, y = map(int, match.groups())
+        pyautogui.moveTo(x, y)
         if on_done: on_done()
         return
     match = re.match(r'mouseMove\((\-?\d+)\_(\-?\d+)\)', step)
@@ -906,7 +932,8 @@ def check_condition(step,folder_path,on_done=None):
     conditionValue = None
     reverse = False
     # 先拆 -> 判斷條件
-    match = re.match(r'(.+)-(.+)->(.+)',step)
+    # 非貪婪：img-X->move->Y 要拆成 條件 img、值 X、指令 move->Y
+    match = re.match(r'(.+?)-(.+?)->(.+)',step)
     if not match: return False
     condition = match.group(1)
     conditionValue = match.group(2)

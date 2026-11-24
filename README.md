@@ -1,4 +1,4 @@
-# GameAgent
+﻿# GameAgent
 
 以圖像辨識為核心的 Windows 桌面自動化工具，用於手機模擬器 / PC 遊戲的日常任務自動化（簽到、領獎、搶票等重複性操作），不修改遊戲檔案或記憶體。
 
@@ -77,10 +77,11 @@ game_folder/
 | `move->圖片名` | 移動滑鼠到圖片位置但不點擊 |
 | `mouseClick` / `rightClick` | 滑鼠左/右鍵點擊 |
 | `mouseMove(x_y)` | 相對移動滑鼠 |
+| `mouseMoveTo(x_y)` | 移動到螢幕絕對座標 |
 | `scrollUp` / `scrollDown` | 滾輪滾動（預設 500）|
 | `scrollUp(n)` / `scrollDown(n)` | 指定捲動量，例如 `scrollDown(100)` |
 | `drag(x_y)` / `drag(x_y_秒)` | 從目前位置按住左鍵拖到相對座標（預設 0.5 秒）|
-| `press->按鍵` | 按下單一鍵盤按鍵 |
+| `press->按鍵` / `press->ctrl+w` | 按下單一按鍵，或用 `+` 串組合鍵（依序按下、反序放開）|
 | `"文字"` | 貼上文字（透過剪貼簿） |
 | `@圖片->驗證碼圖片#位數` | 辨識驗證碼並輸入 |
 | `http://網址` | 開啟瀏覽器網址 |
@@ -149,6 +150,10 @@ data = {"command": "closeCore"}
 ## 技術棧
 
 `cv2` `numpy` `pyautogui` `pytesseract` `customtkinter` `pywin32` `keyboard` `mouse` `psutil` `pyperclip`，以 PyInstaller 打包為單一 exe。
+
+## 贊助
+
+如果這個專案幫你省下了重複點擊的時間，歡迎透過 [GitHub Sponsors](https://github.com/sponsors/b200077) 支持後續開發 ☕
 
 ## 免責聲明
 
